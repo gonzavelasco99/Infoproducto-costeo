@@ -1,0 +1,18 @@
+app = "costeo-worker-beta"
+primary_region = "gru"
+
+[build]
+  dockerfile = "deploy/docker/Dockerfile"
+  build-target = "worker"
+
+[env]
+  NODE_ENV = "production"
+  WORKER_CONCURRENCY = "2"
+
+[processes]
+  app = "node apps/worker/dist/index.js"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

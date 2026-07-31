@@ -1,0 +1,17 @@
+app = "costeo-web-beta"
+primary_region = "gru"
+
+[build]
+  dockerfile = "deploy/docker/Dockerfile"
+  build-target = "web"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0

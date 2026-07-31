@@ -1,0 +1,95 @@
+import { z } from "zod";
+const decimal = z
+    .string()
+    .trim()
+    .min(1)
+    .regex(/^-?(?:\d+\.?\d*|\.\d+)$/, "Debe ser una cadena decimal, no un número IEEE-754.");
+const uuid = z.string().uuid();
+const compraSchema = z.object({
+    compra_id: uuid,
+    cantidad_base: decimal,
+    precio_bruto_unitario: decimal,
+    alicuota_iva: decimal,
+    tratamiento_iva: z.enum(["computable", "integra_costo", "no_aplica"]),
+    costo_adquisicion_directo_total: decimal.optional()
+}).strict();
+const recetaItemSchema = z.object({
+    item_componente_id: uuid,
+    cantidad_neta: decimal,
+    merma_estandar: decimal,
+    factor_conversion_snapshot: decimal.optional()
+}).strict();
+const itemSchema = z.object({
+    item_id: uuid,
+    codigo: z.string().trim().min(1).max(80),
+    nombre: z.string().trim().min(1).max(180),
+    tipo_item: z.enum([
+        "materia_prima",
+        "insumo",
+        "mercaderia_reventa",
+        "producto_intermedio",
+        "producto_final",
+        "envase_embalaje",
+        "consumible",
+        "subproducto_recupero"
+    ]),
+    origen_item: z.enum(["comprado", "fabricado", "mixto", "generado_subproducto"]),
+    vendible: z.boolean(),
+    inventariable: z.boolean(),
+    unidad_base_id: uuid,
+    activo: z.boolean().optional(),
+    compras: z.array(compraSchema).optional(),
+    fuentes_fallback: z.object({
+        historico_archivo: decimal.optional(),
+        manual: decimal.optional(),
+        presupuestado: decimal.optional()
+    }).strict().optional(),
+    receta: z.object({
+        cantidad_salida_base: decimal,
+        componentes: z.array(recetaItemSchema).max(100)
+    }).strict().optional(),
+    mano_obra: z.array(z.object({
+        rol_id: uuid,
+        horas_estandar: decimal,
+        costo_hora_completo: decimal,
+        comportamiento: z.enum(["fijo", "variable"])
+    }).strict()).optional(),
+    participacion_comprada: decimal.optional(),
+    venta: z.object({
+        cantidad_base: decimal,
+        precio_bruto_unitario: decimal,
+        alicuota_iva: decimal,
+        tratamiento_iva: z.enum(["computable", "integra_costo", "no_aplica"]).optional(),
+        descuento_bruto_total: decimal.optional()
+    }).strict().optional()
+}).strict();
+const costoSchema = z.object({
+    costo_id: uuid,
+    nombre: z.string().trim().min(1).max(180),
+    categoria: z.string().trim().min(1).max(80),
+    monto_total: decimal,
+    trazabilidad: z.enum(["directo", "indirecto"]),
+    comportamiento: z.enum(["fijo", "variable"]),
+    item_directo_id: uuid.optional(),
+    alcance_item_ids: z.array(uuid).optional(),
+    driver: z.object({
+        tipo: z.enum(["manual", "costo_directo", "ventas_netas", "unidades_vendidas", "uniforme"]),
+        bases_manuales: z.record(uuid, decimal).optional()
+    }).strict().optional()
+}).strict();
+export const calculationInputSchema = z.object({
+    schema_version: z.literal("2026-07-27.beta1"),
+    calculation_id: uuid,
+    moneda_base: z.string().length(3).transform((value) => value.toUpperCase()),
+    tolerancia_conciliacion: decimal.optional(),
+    items: z.array(itemSchema).min(1).max(100),
+    costos: z.array(costoSchema).max(200)
+}).strict();
+export function parseCalculationInput(value) {
+    return calculationInputSchema.parse(value);
+}
+export const apiErrorSchema = z.object({
+    error: z.string(),
+    details: z.unknown().optional()
+}).strict();
+//# sourceMappingURL=calculation.js.map

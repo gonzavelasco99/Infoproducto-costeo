@@ -1,0 +1,200 @@
+import { describe, expect, it } from "vitest";
+import { calculate, canonicalStringify, decomposeGross } from "../src/index.js";
+import { D } from "../src/decimal.js";
+import { baseInput, ids, purchasedItem } from "./fixtures.js";
+
+describe("motor determinista de costeo beta", () => {
+  it("FND-004 descompone bruto, neto e IVA sin float binario", () => {
+    const result = decomposeGross(D("121"), D("0.21"));
+    expect(result.net.toString()).toBe("100");
+    expect(result.vat.toString()).toBe("21");
+  });
+
+  it("calcula el caso patrón de fabricación y concilia ambas vistas", () => {
+    const raw = purchasedItem();
+    const finished = {
+      item_id: ids.finished,
+      codigo: "PT-001",
+      nombre: "Producto terminado",
+      tipo_item: "producto_final" as const,
+      origen_item: "fabricado" as const,
+      vendible: true,
+      inventariable: true,
+      unidad_base_id: ids.unit,
+      receta: {
+        cantidad_salida_base: "1",
+        componentes: [{
+          item_componente_id: ids.raw,
+          cantidad_neta: "1",
+          merma_estandar: "0.1"
+        }]
+      },
+      mano_obra: [{
+        rol_id: ids.labor,
+        horas_estandar: "2",
+        costo_hora_completo: "10",
+        comportamiento: "variable" as const
+      }],
+      venta: {
+        cantidad_base: "10",
+        precio_bruto_unitario: "242",
+        alicuota_iva: "0.21"
+      }
+    };
+    const input = baseInput([raw, finished]);
+    input.costos.push({
+      costo_id: ids.cost,
+      nombre: "Administración",
+      categoria: "administracion",
+      monto_total: "300",
+      trazabilidad: "indirecto",
+      comportamiento: "fijo",
+      driver: { tipo: "ventas_netas" }
+    });
+
+    const result = calculate(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.orden_costeo).toEqual([ids.raw, ids.finished]);
+    expect(result.resultados_item[0]?.ventas_netas).toBe("2000");
+    expect(D(result.resultados_item[0]?.costo_directo ?? 0).toDecimalPlaces(6).toString()).toBe("1311.111111");
+    expect(result.conciliacion.conciliado).toBe(true);
+    expect(result.conciliacion.diferencia_vistas).toBe("0");
+  });
+
+  it("calcula el caso patrón de reventa con costo directo adicional", () => {
+    const resale = purchasedItem({
+      item_id: ids.resale,
+      codigo: "REV-001",
+      nombre: "Mercadería",
+      tipo_item: "mercaderia_reventa",
+      vendible: true,
+      venta: { cantidad_base: "10", precio_bruto_unitario: "181.5", alicuota_iva: "0.21" }
+    });
+    const input = baseInput([resale]);
+    input.costos.push({
+      costo_id: ids.cost,
+      nombre: "Flete directo",
+      categoria: "logistica",
+      monto_total: "100",
+      trazabilidad: "directo",
+      comportamiento: "variable",
+      item_directo_id: ids.resale
+    });
+    const result = calculate(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.resultados_item[0]).toMatchObject({
+      ventas_netas: "1500",
+      costo_directo: "1100",
+      resultado_operativo_trazabilidad: "400",
+      resultado_operativo_comportamiento: "400"
+    });
+  });
+
+  it("mantiene separadas y pondera las fuentes de un ítem mixto", () => {
+    const raw = purchasedItem();
+    const mixed = {
+      ...purchasedItem({
+        item_id: ids.mixed,
+        codigo: "MIX-001",
+        nombre: "Producto mixto",
+        tipo_item: "producto_final",
+        origen_item: "mixto",
+        vendible: true,
+        compras: [{
+          compra_id: ids.purchase2,
+          cantidad_base: "10",
+          precio_bruto_unitario: "242",
+          alicuota_iva: "0.21",
+          tratamiento_iva: "computable"
+        }]
+      }),
+      participacion_comprada: "0.25",
+      receta: {
+        cantidad_salida_base: "1",
+        componentes: [{ item_componente_id: ids.raw, cantidad_neta: "1", merma_estandar: "0" }]
+      },
+      mano_obra: [{ rol_id: ids.labor, horas_estandar: "2", costo_hora_completo: "10", comportamiento: "fijo" as const }],
+      venta: { cantidad_base: "5", precio_bruto_unitario: "242", alicuota_iva: "0.21" }
+    };
+    const result = calculate(baseInput([raw, mixed]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const cost = result.costos_item.find((entry) => entry.item_id === ids.mixed);
+    expect(cost).toMatchObject({
+      costo_unitario_aplicable: "140",
+      costo_unitario_variable: "125",
+      costo_unitario_fijo: "15",
+      fuente_costo: "mixto"
+    });
+    expect(result.resultado_empresa).toBe("300");
+  });
+
+  it("bloquea ciclos directos o indirectos de BOM", () => {
+    const first = purchasedItem({
+      item_id: ids.raw,
+      origen_item: "fabricado",
+      receta: { cantidad_salida_base: "1", componentes: [{ item_componente_id: ids.finished, cantidad_neta: "1", merma_estandar: "0" }] }
+    });
+    const second = purchasedItem({
+      item_id: ids.finished,
+      codigo: "PT-001",
+      origen_item: "fabricado",
+      receta: { cantidad_salida_base: "1", componentes: [{ item_componente_id: ids.raw, cantidad_neta: "1", merma_estandar: "0" }] }
+    });
+    const result = calculate(baseInput([first, second]));
+    expect(result.ok).toBe(false);
+    expect(result.validaciones.some((entry) => entry.codigo === "VAL-BOM-001")).toBe(true);
+  });
+
+  it("aplica el límite gratuito aunque los intermedios aparezcan antes que el producto final", () => {
+    const purchased = purchasedItem();
+    const intermediateTwo = {
+      ...purchasedItem({ item_id: ids.resale, codigo: "INT-002", tipo_item: "producto_intermedio", origen_item: "fabricado" }),
+      compras: undefined,
+      receta: { cantidad_salida_base: "1", componentes: [{ item_componente_id: ids.raw, cantidad_neta: "1", merma_estandar: "0" }] }
+    };
+    const intermediateOne = {
+      ...purchasedItem({ item_id: ids.mixed, codigo: "INT-001", tipo_item: "producto_intermedio", origen_item: "fabricado" }),
+      compras: undefined,
+      receta: { cantidad_salida_base: "1", componentes: [{ item_componente_id: ids.resale, cantidad_neta: "1", merma_estandar: "0" }] }
+    };
+    const finished = {
+      ...purchasedItem({ item_id: ids.finished, codigo: "PT-001", tipo_item: "producto_final", origen_item: "fabricado", vendible: true }),
+      compras: undefined,
+      receta: { cantidad_salida_base: "1", componentes: [{ item_componente_id: ids.mixed, cantidad_neta: "1", merma_estandar: "0" }] }
+    };
+    const result = calculate(baseInput([purchased, intermediateTwo, intermediateOne, finished]));
+    expect(result.ok).toBe(false);
+    expect(result.validaciones.some((entry) => entry.codigo === "VAL-BOM-007")).toBe(true);
+  });
+
+  it("aplica la jerarquía residual si el driver manual es inválido", () => {
+    const resale = purchasedItem({
+      item_id: ids.resale,
+      tipo_item: "mercaderia_reventa",
+      vendible: true,
+      venta: { cantidad_base: "2", precio_bruto_unitario: "242", alicuota_iva: "0.21" }
+    });
+    const input = baseInput([resale]);
+    input.costos.push({
+      costo_id: ids.cost,
+      nombre: "Administración",
+      categoria: "administracion",
+      monto_total: "30",
+      trazabilidad: "indirecto",
+      comportamiento: "fijo",
+      driver: { tipo: "manual", bases_manuales: { [ids.resale]: "-1" } }
+    });
+    const result = calculate(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.asignaciones[0]?.driver_aplicado).toBe("costo_directo");
+    expect(result.validaciones.some((entry) => entry.codigo === "VAL-DRV-005")).toBe(true);
+  });
+
+  it("serializa objetos canónicamente para snapshots reproducibles", () => {
+    expect(canonicalStringify({ z: 1, nested: { b: 2, a: 1 }, a: 2 })).toBe('{"a":2,"nested":{"a":1,"b":2},"z":1}');
+  });
+});
