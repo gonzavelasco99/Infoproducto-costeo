@@ -1,24 +1,35 @@
-app = "costeo-api-beta"
-primary_region = "gru"
+# fly.toml app configuration file generated for costeo-api-beta on 2026-07-31T15:16:32-03:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'costeo-api-beta'
+primary_region = 'gru'
 
 [build]
-  dockerfile = "deploy/docker/Dockerfile"
-  build-target = "api"
+  dockerfile = '../docker/Dockerfile'
+  build-target = 'api'
 
 [env]
-  NODE_ENV = "production"
-  PORT = "4000"
+  NODE_ENV = 'production'
+  PORT = '4000'
 
 [http_service]
   internal_port = 4000
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
 
   [[http_service.checks]]
-    grace_period = "10s"
-    interval = "15s"
-    method = "GET"
-    path = "/health"
-    timeout = "3s"
+    interval = '15s'
+    timeout = '3s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
+  memory_mb = 1024

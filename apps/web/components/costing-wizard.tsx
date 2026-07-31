@@ -131,7 +131,27 @@ export function CostingWizard() {
   const calculateNow = () => {
     setWorking(true);
     setResult(null);
-    workerRef.current?.postMessage(input);
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+    if (!apiUrl) {
+      workerRef.current?.postMessage(input);
+      return;
+    }
+
+    void fetch(`${apiUrl}/v1/calculations/free`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input)
+    })
+      .then(async (response) => {
+        const payload = await response.json() as { data?: CalculationOutcome };
+        if (!response.ok || !payload.data) throw new Error("La API no pudo calcular el resultado.");
+        setResult(payload.data);
+      })
+      .catch(() => {
+        workerRef.current?.postMessage(input);
+        setFileMessage("La API no respondió; se aplicó el cálculo local.");
+      })
+      .finally(() => setWorking(false));
   };
 
   const downloadNativeFile = async () => {
