@@ -8,7 +8,7 @@ export default function HomePage() {
         <h1>Entendé cuánto gana realmente cada producto.</h1>
         <p className="lead">
           Primer corte funcional: fabricación simple, IVA, merma, mano de obra,
-          indirectos y conciliación automática. Tus datos se calculan en este navegador.
+          indirectos y conciliación automática. La API procesa el cálculo sin persistir datos empresariales.
         </p>
       </header>
       <CostingWizard />
