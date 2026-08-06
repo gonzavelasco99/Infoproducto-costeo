@@ -1,14 +1,10 @@
 import { D, Decimal, ONE, ZERO, decimalString, sum } from "./decimal.js";
 import { validateCalculationInput } from "./validation.js";
-export const ENGINE_VERSION = "0.1.0";
-export const SCHEMA_VERSION = "2026-07-27.beta1";
+export const ENGINE_VERSION = "0.2.0";
+export const SCHEMA_VERSION = "2026-07-31.beta2";
 export function decomposeGross(gross, vatRate) {
     const net = gross.div(ONE.plus(vatRate));
     return { net, vat: gross.minus(net) };
-}
-function economicAmount(gross, vatRate, treatment) {
-    const { net } = decomposeGross(gross, vatRate);
-    return treatment === "computable" ? net : gross;
 }
 function purchasedCost(item) {
     if (item.compras && item.compras.length > 0) {
@@ -16,8 +12,8 @@ function purchasedCost(item) {
         let total = ZERO;
         for (const purchase of item.compras) {
             const q = D(purchase.cantidad_base);
-            const economicUnit = economicAmount(D(purchase.precio_bruto_unitario), D(purchase.alicuota_iva), purchase.tratamiento_iva);
-            const acquisitionUnit = D(purchase.costo_adquisicion_directo_total ?? 0).div(q);
+            const economicUnit = D(purchase.precio_neto_unitario);
+            const acquisitionUnit = D(purchase.costo_adquisicion_neto_total ?? 0).div(q);
             quantity = quantity.plus(q);
             total = total.plus(economicUnit.plus(acquisitionUnit).times(q));
         }
@@ -73,7 +69,11 @@ function buildUnitCosts(items, order) {
                     issues.push({
                         codigo: "VAL-BOM-006",
                         severidad: "error_bloqueante",
+                        fase: "pre_calculo",
                         mensaje: "Un componente intermedio no tiene una fuente de costo aplicable.",
+                        alcance_bloqueado: "ítem y resultados dependientes",
+                        remediacion: "Completá una compra o una fuente alternativa para el componente.",
+                        formula_ids: ["MAT-003", "INT-001"],
                         source_path: `/items/${itemId}/receta/componentes/${component.item_componente_id}`
                     });
                     continue;
@@ -122,7 +122,10 @@ function buildUnitCosts(items, order) {
             issues.push({
                 codigo: "VAL-DAT-001",
                 severidad: "error_bloqueante",
+                fase: "pre_calculo",
                 mensaje: "No existe una fuente de costo aplicable para el ítem.",
+                alcance_bloqueado: "ítem y resultados dependientes",
+                remediacion: "Cargá una compra, un costo manual o una receta válida.",
                 source_path: `/items/${itemId}`
             });
         }
@@ -133,12 +136,9 @@ function saleTotals(item) {
     if (!item.venta)
         return { sales: ZERO, units: ZERO };
     const units = D(item.venta.cantidad_base);
-    const gross = units.times(D(item.venta.precio_bruto_unitario));
-    const treatment = item.venta.tratamiento_iva ?? "computable";
-    const economic = economicAmount(gross, D(item.venta.alicuota_iva), treatment);
-    const discountGross = D(item.venta.descuento_bruto_total ?? 0);
-    const discountEconomic = economicAmount(discountGross, D(item.venta.alicuota_iva), treatment);
-    return { sales: economic.minus(discountEconomic), units };
+    const net = units.times(D(item.venta.precio_neto_unitario));
+    const discountNet = D(item.venta.descuento_neto_total ?? 0);
+    return { sales: net.minus(discountNet), units };
 }
 function candidateBases(kind, cost, recipients) {
     const values = new Map();
@@ -152,6 +152,8 @@ function candidateBases(kind, cost, recipients) {
             value = Decimal.max(recipient.sales, ZERO);
         else if (kind === "unidades_vendidas")
             value = recipient.units;
+        else if (kind === "horas_mod")
+            value = recipient.laborHours;
         else
             value = ONE;
         values.set(recipient.item.item_id, value);
@@ -168,7 +170,11 @@ function allocateIndirect(cost, itemResults, issues) {
         issues.push({
             codigo: "VAL-POOL-003",
             severidad: "error_bloqueante",
+            fase: "pre_calculo",
             mensaje: "El costo indirecto no tiene receptores configurados.",
+            alcance_bloqueado: "pool y resultado operativo",
+            remediacion: "Asigná al menos un SKU receptor al costo.",
+            formula_ids: ["ASG-006"],
             source_path: `/costos/${cost.costo_id}/alcance_item_ids`
         });
         return [];
@@ -190,7 +196,11 @@ function allocateIndirect(cost, itemResults, issues) {
         issues.push({
             codigo: "VAL-DRV-002",
             severidad: "error_bloqueante",
+            fase: "calculo",
             mensaje: "Las bases del driver deben ser no negativas y sumar más que cero.",
+            alcance_bloqueado: "pool y resultado operativo",
+            remediacion: "Elegí un driver con bases disponibles o completá las bases manuales.",
+            formula_ids: ["ASG-001", "ASG-006"],
             source_path: `/costos/${cost.costo_id}/driver`
         });
         return [];
@@ -199,13 +209,17 @@ function allocateIndirect(cost, itemResults, issues) {
         issues.push({
             codigo: applied === "uniforme" ? "VAL-DRV-006" : "VAL-DRV-005",
             severidad: "advertencia_metodologica",
+            fase: "calculo",
             mensaje: `El driver ${requested} no fue aplicable; se utilizó ${applied}.`,
+            alcance_bloqueado: "no bloquea; afecta la interpretación de la asignación",
+            remediacion: "Revisá la disponibilidad de la base solicitada o aceptá explícitamente el fallback.",
+            formula_ids: ["ASG-006"],
             source_path: `/costos/${cost.costo_id}/driver`,
             detalle: { solicitado: requested, aplicado: applied }
         });
     }
     const totalBase = sum(bases.values());
-    const amount = D(cost.monto_total);
+    const amount = D(cost.monto_neto_total);
     let assigned = ZERO;
     return recipients.map((recipient, index) => {
         const base = bases?.get(recipient.item.item_id) ?? ZERO;
@@ -229,12 +243,14 @@ function allocateIndirect(cost, itemResults, issues) {
         };
     });
 }
-function presentItemResult(entry) {
+function presentItemResult(entry, productiveRate, taxRate) {
     const margin = entry.sales.minus(entry.direct);
     const contribution = entry.sales.minus(entry.variable);
     const traceResult = margin.minus(entry.indirect);
     const behaviorResult = contribution.minus(entry.fixed);
     const fullCost = entry.direct.plus(entry.indirect);
+    const productiveNormalTotal = productiveRate === undefined ? undefined : entry.direct.plus(entry.laborHours.times(productiveRate));
+    const estimatedTax = taxRate === undefined ? undefined : Decimal.max(traceResult, ZERO).times(taxRate);
     return {
         item_id: entry.item.item_id,
         codigo: entry.item.codigo,
@@ -249,7 +265,13 @@ function presentItemResult(entry) {
         resultado_operativo_trazabilidad: decimalString(traceResult),
         resultado_operativo_comportamiento: decimalString(behaviorResult),
         margen_operativo_porcentual: entry.sales.gt(0) ? decimalString(traceResult.div(entry.sales)) : null,
-        costo_completo_unitario_gerencial: entry.units.gt(0) ? decimalString(fullCost.div(entry.units)) : null
+        costo_completo_unitario_gerencial: entry.units.gt(0) ? decimalString(fullCost.div(entry.units)) : null,
+        costo_productivo_normal_unitario: productiveNormalTotal !== undefined && entry.units.gt(0)
+            ? decimalString(productiveNormalTotal.div(entry.units))
+            : null,
+        precio_umbral_contribucion_cero: entry.units.gt(0) ? decimalString(entry.variable.div(entry.units)) : null,
+        impuesto_resultado_estimado: estimatedTax === undefined ? null : decimalString(estimatedTax),
+        resultado_neto_estimado: estimatedTax === undefined ? null : decimalString(traceResult.minus(estimatedTax))
     };
 }
 export function calculate(input) {
@@ -286,7 +308,8 @@ export function calculate(input) {
             direct: unit.total.times(sale.units),
             indirect: ZERO,
             variable: unit.variable.times(sale.units),
-            fixed: unit.fixed.times(sale.units)
+            fixed: unit.fixed.times(sale.units),
+            laborHours: sum((item.mano_obra ?? []).map((labor) => D(labor.horas_estandar))).times(sale.units)
         });
     }
     const allocations = [];
@@ -295,7 +318,7 @@ export function calculate(input) {
             const target = itemResults.get(cost.item_directo_id);
             if (!target)
                 continue;
-            const amount = D(cost.monto_total);
+            const amount = D(cost.monto_neto_total);
             target.direct = target.direct.plus(amount);
             if (cost.comportamiento === "variable")
                 target.variable = target.variable.plus(amount);
@@ -325,8 +348,29 @@ export function calculate(input) {
             validaciones: validationIssues
         };
     }
-    const presented = [...itemResults.values()].filter((entry) => entry.item.vendible).map(presentItemResult);
-    const totalCostsLoaded = sum(input.costos.map((cost) => D(cost.monto_total))).plus(sum([...itemResults.values()].map((entry) => {
+    const productiveFixed = sum(input.costos
+        .filter((cost) => cost.categoria === "produccion" && cost.comportamiento === "fijo")
+        .map((cost) => D(cost.monto_neto_total)));
+    const normalHours = input.capacidad_normal_horas === undefined ? undefined : D(input.capacidad_normal_horas);
+    const productiveRate = normalHours === undefined ? undefined : productiveFixed.div(normalHours);
+    const appliedHours = sum([...itemResults.values()].filter((entry) => entry.item.vendible).map((entry) => entry.laborHours));
+    const capacity = normalHours === undefined || productiveRate === undefined
+        ? null
+        : {
+            horas_normales: decimalString(normalHours),
+            horas_aplicadas: decimalString(appliedHours),
+            costo_fijo_productivo: decimalString(productiveFixed),
+            tasa_fija_productiva_normal: decimalString(productiveRate),
+            costo_fijo_absorbido: decimalString(appliedHours.times(productiveRate)),
+            variacion_capacidad: decimalString(productiveFixed.minus(appliedHours.times(productiveRate)))
+        };
+    const taxRate = input.configuracion.alicuota_impuesto_resultado === undefined
+        ? undefined
+        : D(input.configuracion.alicuota_impuesto_resultado);
+    const presented = [...itemResults.values()]
+        .filter((entry) => entry.item.vendible)
+        .map((entry) => presentItemResult(entry, productiveRate, taxRate));
+    const totalCostsLoaded = sum(input.costos.map((cost) => D(cost.monto_neto_total))).plus(sum([...itemResults.values()].map((entry) => {
         const unit = unitCosts.get(entry.item.item_id);
         return unit ? unit.total.times(entry.units) : ZERO;
     })));
@@ -341,11 +385,37 @@ export function calculate(input) {
         validationIssues.push({
             codigo: "VAL-REC-001",
             severidad: "error_bloqueante",
+            fase: "post_calculo",
             mensaje: "La diferencia de conciliación supera la tolerancia.",
+            alcance_bloqueado: "corrida completa",
+            remediacion: "Revisá asignaciones, signos y universos antes de usar los resultados.",
+            formula_ids: ["REC-001", "REC-002", "REC-004"],
             diferencia: decimalString(Decimal.max(costDifference.abs(), viewDifference.abs())),
             detalle: { costo: decimalString(costDifference), vistas: decimalString(viewDifference) }
         });
+        return {
+            ok: false,
+            engine_version: ENGINE_VERSION,
+            schema_version: SCHEMA_VERSION,
+            calculation_id: input.calculation_id,
+            validaciones: validationIssues
+        };
     }
+    const resultLayers = [
+        { codigo: "costo_directo", estado: "calculado" },
+        productiveRate === undefined
+            ? { codigo: "costo_productivo_normal", estado: "no_disponible", motivo: "Falta capacidad normal del período." }
+            : { codigo: "costo_productivo_normal", estado: "calculado" },
+        { codigo: "margen_bruto", estado: "calculado" },
+        { codigo: "contribucion_marginal", estado: "calculado" },
+        { codigo: "resultado_operativo", estado: "calculado" },
+        taxRate === undefined
+            ? { codigo: "resultado_neto_estimado", estado: "no_disponible", motivo: "No se informó una alícuota estimada de impuesto al resultado." }
+            : { codigo: "resultado_neto_estimado", estado: "calculado" }
+    ];
+    const netCompany = taxRate === undefined
+        ? null
+        : decimalString(sum(presented.map((entry) => D(entry.resultado_neto_estimado ?? 0))));
     const result = {
         ok: true,
         engine_version: ENGINE_VERSION,
@@ -367,6 +437,9 @@ export function calculate(input) {
         asignaciones: allocations,
         resultados_item: presented,
         resultado_empresa: decimalString(traceResult),
+        resultado_neto_empresa_estimado: netCompany,
+        capas_resultado: resultLayers,
+        capacidad: capacity,
         conciliacion: {
             costos_cargados: decimalString(totalCostsLoaded),
             costos_asignados: decimalString(totalAssigned),

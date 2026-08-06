@@ -44,7 +44,7 @@ export async function buildApp() {
         }
       }
     }
-  }, async () => ({ status: "ok", engine_version: "0.1.0" }));
+  }, async () => ({ status: "ok", engine_version: "0.2.0" }));
 
   app.post("/v1/calculations/free", {
     schema: {

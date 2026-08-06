@@ -1,15 +1,26 @@
 import { D } from "./decimal.js";
-import type { CalculationInput, ItemInput, ValidationIssue } from "./types.js";
+import type { CalculationInput, ItemInput, ValidationIssue, ValidationPhase, ValidationSeverity } from "./types.js";
 
 const issue = (
   codigo: string,
   mensaje: string,
   source_path?: string,
-  detalle?: Record<string, unknown>
+  detalle?: Record<string, unknown>,
+  options: {
+    severidad?: ValidationSeverity;
+    fase?: ValidationPhase;
+    alcance?: string;
+    remediacion?: string;
+    formula_ids?: string[];
+  } = {}
 ): ValidationIssue => ({
   codigo,
-  severidad: "error_bloqueante",
+  severidad: options.severidad ?? "error_bloqueante",
+  fase: options.fase ?? "captura",
   mensaje,
+  alcance_bloqueado: options.alcance ?? "dato y resultados dependientes",
+  remediacion: options.remediacion ?? "Corregí el dato indicado antes de volver a calcular.",
+  ...(options.formula_ids === undefined ? {} : { formula_ids: options.formula_ids }),
   ...(source_path === undefined ? {} : { source_path }),
   ...(detalle === undefined ? {} : { detalle })
 });
@@ -72,10 +83,9 @@ function validateItem(item: ItemInput, index: number, itemsById: Map<string, Ite
   item.compras?.forEach((compra, compraIndex) => {
     const compraPath = `${base}/compras/${compraIndex}`;
     validateDecimal(compra.cantidad_base, `${compraPath}/cantidad_base`, issues, { positive: true });
-    validateDecimal(compra.precio_bruto_unitario, `${compraPath}/precio_bruto_unitario`, issues);
-    validateDecimal(compra.alicuota_iva, `${compraPath}/alicuota_iva`, issues);
-    if (compra.costo_adquisicion_directo_total !== undefined) {
-      validateDecimal(compra.costo_adquisicion_directo_total, `${compraPath}/costo_adquisicion_directo_total`, issues);
+    validateDecimal(compra.precio_neto_unitario, `${compraPath}/precio_neto_unitario`, issues);
+    if (compra.costo_adquisicion_neto_total !== undefined) {
+      validateDecimal(compra.costo_adquisicion_neto_total, `${compraPath}/costo_adquisicion_neto_total`, issues);
     }
   });
   if (item.receta) {
@@ -109,10 +119,9 @@ function validateItem(item: ItemInput, index: number, itemsById: Map<string, Ite
       issues.push(issue("VAL-ITEM-002", "Solo un ítem vendible puede registrar ventas ordinarias.", `${base}/venta`));
     }
     validateDecimal(item.venta.cantidad_base, `${base}/venta/cantidad_base`, issues);
-    validateDecimal(item.venta.precio_bruto_unitario, `${base}/venta/precio_bruto_unitario`, issues);
-    validateDecimal(item.venta.alicuota_iva, `${base}/venta/alicuota_iva`, issues);
-    if (item.venta.descuento_bruto_total !== undefined) {
-      validateDecimal(item.venta.descuento_bruto_total, `${base}/venta/descuento_bruto_total`, issues);
+    validateDecimal(item.venta.precio_neto_unitario, `${base}/venta/precio_neto_unitario`, issues);
+    if (item.venta.descuento_neto_total !== undefined) {
+      validateDecimal(item.venta.descuento_neto_total, `${base}/venta/descuento_neto_total`, issues);
     }
   }
 }
@@ -159,6 +168,45 @@ function validateGraph(itemsById: Map<string, ItemInput>, issues: ValidationIssu
 
 export function validateCalculationInput(input: CalculationInput): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
+  const sellableOrigins = input.items.filter((item) => item.vendible && item.activo !== false).map((item) => item.origen_item);
+  if (input.configuracion.tipo_actividad === "fabricacion" && sellableOrigins.some((origin) => origin === "comprado")) {
+    issues.push(issue(
+      "VAL-DAT-001",
+      "La configuración de fabricación no admite SKU de reventa.",
+      "/configuracion/tipo_actividad",
+      undefined,
+      { remediacion: "Cambiá la actividad a mixta o definí el SKU como fabricado." }
+    ));
+  }
+  if (input.configuracion.tipo_actividad === "reventa" && sellableOrigins.some((origin) => origin !== "comprado")) {
+    issues.push(issue(
+      "VAL-DAT-001",
+      "La configuración de reventa no admite SKU fabricados o mixtos.",
+      "/configuracion/tipo_actividad",
+      undefined,
+      { remediacion: "Cambiá la actividad a mixta o definí el SKU como comprado." }
+    ));
+  }
+  if (input.configuracion.alicuota_impuesto_resultado !== undefined) {
+    validateDecimal(input.configuracion.alicuota_impuesto_resultado, "/configuracion/alicuota_impuesto_resultado", issues, { rate: true });
+  }
+  if (input.capacidad_normal_horas !== undefined) {
+    validateDecimal(input.capacidad_normal_horas, "/capacidad_normal_horas", issues, { positive: true });
+  } else if (input.configuracion.tipo_actividad !== "reventa") {
+    issues.push(issue(
+      "VAL-CAP-001",
+      "Sin capacidad normal se puede calcular costo directo, pero no costo productivo normal ni variación de capacidad.",
+      "/capacidad_normal_horas",
+      undefined,
+      {
+        severidad: "recomendacion_mejora",
+        fase: "pre_calculo",
+        alcance: "capa de costo productivo normal",
+        remediacion: "Informá las horas productivas normales del período para habilitar esa capa.",
+        formula_ids: ["CAP-001", "CAP-002", "RES-008"]
+      }
+    ));
+  }
   const itemsById = new Map(input.items.map((item) => [item.item_id, item]));
   if (itemsById.size !== input.items.length) {
     issues.push(issue("VAL-DAT-005", "Los identificadores de ítem deben ser únicos.", "/items"));
@@ -181,7 +229,7 @@ export function validateCalculationInput(input: CalculationInput): ValidationIss
     const path = `/costos/${index}`;
     if (costIds.has(cost.costo_id)) issues.push(issue("VAL-DAT-005", "Los identificadores de costo deben ser únicos.", `${path}/costo_id`));
     costIds.add(cost.costo_id);
-    validateDecimal(cost.monto_total, `${path}/monto_total`, issues);
+    validateDecimal(cost.monto_neto_total, `${path}/monto_neto_total`, issues);
     if (cost.trazabilidad === "directo") {
       if (!cost.item_directo_id || !itemsById.has(cost.item_directo_id)) {
         issues.push(issue("VAL-DAT-004", "Un costo directo requiere un ítem existente.", `${path}/item_directo_id`));

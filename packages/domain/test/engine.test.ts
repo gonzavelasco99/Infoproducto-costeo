@@ -37,8 +37,7 @@ describe("motor determinista de costeo beta", () => {
       }],
       venta: {
         cantidad_base: "10",
-        precio_bruto_unitario: "242",
-        alicuota_iva: "0.21"
+        precio_neto_unitario: "200"
       }
     };
     const input = baseInput([raw, finished]);
@@ -46,7 +45,7 @@ describe("motor determinista de costeo beta", () => {
       costo_id: ids.cost,
       nombre: "Administración",
       categoria: "administracion",
-      monto_total: "300",
+      monto_neto_total: "300",
       trazabilidad: "indirecto",
       comportamiento: "fijo",
       driver: { tipo: "ventas_netas" }
@@ -69,14 +68,14 @@ describe("motor determinista de costeo beta", () => {
       nombre: "Mercadería",
       tipo_item: "mercaderia_reventa",
       vendible: true,
-      venta: { cantidad_base: "10", precio_bruto_unitario: "181.5", alicuota_iva: "0.21" }
+      venta: { cantidad_base: "10", precio_neto_unitario: "150" }
     });
     const input = baseInput([resale]);
     input.costos.push({
       costo_id: ids.cost,
       nombre: "Flete directo",
       categoria: "logistica",
-      monto_total: "100",
+      monto_neto_total: "100",
       trazabilidad: "directo",
       comportamiento: "variable",
       item_directo_id: ids.resale
@@ -105,9 +104,7 @@ describe("motor determinista de costeo beta", () => {
         compras: [{
           compra_id: ids.purchase2,
           cantidad_base: "10",
-          precio_bruto_unitario: "242",
-          alicuota_iva: "0.21",
-          tratamiento_iva: "computable"
+          precio_neto_unitario: "200"
         }]
       }),
       participacion_comprada: "0.25",
@@ -116,7 +113,7 @@ describe("motor determinista de costeo beta", () => {
         componentes: [{ item_componente_id: ids.raw, cantidad_neta: "1", merma_estandar: "0" }]
       },
       mano_obra: [{ rol_id: ids.labor, horas_estandar: "2", costo_hora_completo: "10", comportamiento: "fijo" as const }],
-      venta: { cantidad_base: "5", precio_bruto_unitario: "242", alicuota_iva: "0.21" }
+      venta: { cantidad_base: "5", precio_neto_unitario: "200" }
     };
     const result = calculate(baseInput([raw, mixed]));
     expect(result.ok).toBe(true);
@@ -175,14 +172,14 @@ describe("motor determinista de costeo beta", () => {
       item_id: ids.resale,
       tipo_item: "mercaderia_reventa",
       vendible: true,
-      venta: { cantidad_base: "2", precio_bruto_unitario: "242", alicuota_iva: "0.21" }
+      venta: { cantidad_base: "2", precio_neto_unitario: "200" }
     });
     const input = baseInput([resale]);
     input.costos.push({
       costo_id: ids.cost,
       nombre: "Administración",
       categoria: "administracion",
-      monto_total: "30",
+      monto_neto_total: "30",
       trazabilidad: "indirecto",
       comportamiento: "fijo",
       driver: { tipo: "manual", bases_manuales: { [ids.resale]: "-1" } }
@@ -192,6 +189,70 @@ describe("motor determinista de costeo beta", () => {
     if (!result.ok) return;
     expect(result.asignaciones[0]?.driver_aplicado).toBe("costo_directo");
     expect(result.validaciones.some((entry) => entry.codigo === "VAL-DRV-005")).toBe(true);
+  });
+
+  it("calcula costo productivo normal y variación de capacidad con importes sin IVA", () => {
+    const raw = purchasedItem();
+    const finished = {
+      item_id: ids.finished,
+      codigo: "PT-001",
+      nombre: "Producto terminado",
+      tipo_item: "producto_final" as const,
+      origen_item: "fabricado" as const,
+      vendible: true,
+      inventariable: true,
+      unidad_base_id: ids.unit,
+      receta: {
+        cantidad_salida_base: "1",
+        componentes: [{ item_componente_id: ids.raw, cantidad_neta: "1", merma_estandar: "0" }]
+      },
+      mano_obra: [{ rol_id: ids.labor, horas_estandar: "2", costo_hora_completo: "10", comportamiento: "variable" as const }],
+      venta: { cantidad_base: "10", precio_neto_unitario: "200" }
+    };
+    const input = baseInput([raw, finished]);
+    input.capacidad_normal_horas = "100";
+    input.configuracion.alicuota_impuesto_resultado = "0.3";
+    input.costos.push({
+      costo_id: ids.cost,
+      nombre: "Estructura productiva",
+      categoria: "produccion",
+      monto_neto_total: "1000",
+      trazabilidad: "indirecto",
+      comportamiento: "fijo",
+      driver: { tipo: "horas_mod" }
+    });
+
+    const result = calculate(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capacidad).toMatchObject({
+      tasa_fija_productiva_normal: "10",
+      costo_fijo_absorbido: "200",
+      variacion_capacidad: "800"
+    });
+    expect(result.resultados_item[0]).toMatchObject({
+      costo_productivo_normal_unitario: "140",
+      precio_umbral_contribucion_cero: "120",
+      impuesto_resultado_estimado: "0",
+      resultado_neto_estimado: "-200"
+    });
+  });
+
+  it("bloquea un SKU de reventa cuando la sesión fue configurada como fabricación", () => {
+    const resale = purchasedItem({
+      item_id: ids.resale,
+      tipo_item: "mercaderia_reventa",
+      vendible: true,
+      venta: { cantidad_base: "1", precio_neto_unitario: "150" }
+    });
+    const input = baseInput([resale]);
+    input.configuracion.tipo_actividad = "fabricacion";
+    const result = calculate(input);
+    expect(result.ok).toBe(false);
+    expect(result.validaciones[0]).toMatchObject({
+      severidad: "error_bloqueante",
+      fase: "captura"
+    });
   });
 
   it("serializa objetos canónicamente para snapshots reproducibles", () => {

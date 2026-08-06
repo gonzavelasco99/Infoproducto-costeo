@@ -1,17 +1,18 @@
-# Costeo organizacional — beta inicial
+# Costeo organizacional — tier gratuito en remediación
 
-Primer corte ejecutable del infoproducto de costeo para PyMEs. Implementa el motor compartido, conciliaciones, casos patrón, contrato API, calculadora gratuita local y la base de persistencia para corridas pagas.
+Primer corte ejecutable del infoproducto de costeo para PyMEs. Implementa el motor compartido, conciliaciones, diagnóstico del negocio, un asistente gratuito local y la base de persistencia para corridas pagas.
 
 ## Qué funciona hoy
 
-- Descomposición de bruto/neto/IVA (`FND-004`) y tratamiento económico del IVA (`FND-005`).
+- Diagnóstico inicial para fabricación, reventa o actividad mixta, objetivo, madurez y condición fiscal.
+- Carga de costos, gastos y precios exclusivamente sin IVA; el contrato vigente es `2026-07-31.beta2`.
 - Compras promedio y fallback de precio (`MAT-001`, `MAT-003`, `MAT-004`).
 - BOM con merma, materiales, MOD y productos intermedios (`MAT-005` a `MAT-007`, `LAB-002/003`, `INT-001/002/004`).
-- Ítems comprados, fabricados y mixtos.
-- Costos directos e indirectos, drivers y jerarquía residual (`ASG-001/002/003/006`).
-- Vistas por trazabilidad y comportamiento (`RES-001` a `RES-007`) con conciliaciones `REC-001/002/004/005`.
-- Validaciones de decimales, límites gratuitos, BOM, fuentes de costo, drivers y tolerancia.
-- Archivo local ZIP gratuito con versión y SHA-256; al abrirlo se valida y recalcula.
+- Hasta cinco SKU comprados, fabricados o mixtos desde la interfaz gratuita.
+- Costos por categoría, drivers recomendados y alternativas visibles (`ASG-001/002/003/006`).
+- Vistas por trazabilidad y comportamiento, costo productivo normal, umbral de contribución y resultado neto estimado cuando hay datos.
+- Validaciones con tipo, fase, alcance bloqueado y acción correctiva visible.
+- Archivo local ZIP gratuito con versión y SHA-256; los archivos `beta1` se migran al contrato neto y se recalculan.
 - API Fastify `/v1/calculations/free`, documentación `/docs` y health check `/health`.
 - Migration inicial de Supabase con RLS, FKs tenant-safe, snapshots y auditoría append-only.
 - Worker de Graphile para corridas pagas y persistencia de métricas normalizadas.
@@ -53,6 +54,6 @@ docs/architecture   decisiones y mapeos del diccionario
 
 ## Verificación y despliegue
 
-La CI ejecuta tipos, ocho pruebas del motor y build de producción. Para desplegar, primero crear los tres proyectos Fly, reemplazar los nombres placeholder en `deploy/fly/*.toml`, cargar secretos y aplicar la migration en un proyecto Supabase de São Paulo. No hay despliegue automático a producción en este corte.
+La verificación local ejecuta tipos, once pruebas de motor y contrato, además del build de producción. Para desplegar, primero crear los tres proyectos Fly, reemplazar los nombres placeholder en `deploy/fly/*.toml`, cargar secretos y aplicar la migration en un proyecto Supabase de São Paulo. No hay despliegue automático a producción en este corte.
 
-La decisión completa está en [ADR-001](docs/architecture/ADR-001-beta-architecture.md).
+Las decisiones están en [ADR-001](docs/architecture/ADR-001-beta-architecture.md) y [ADR-002](docs/architecture/ADR-002-tier-gratuito-configurable-sin-iva.md).
