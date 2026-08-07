@@ -31,6 +31,7 @@ export declare const calculationInputSchema: z.ZodObject<{
     moneda_base: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
     tolerancia_conciliacion: z.ZodOptional<z.ZodString>;
     capacidad_normal_horas: z.ZodOptional<z.ZodString>;
+    horas_mod_disponibles: z.ZodOptional<z.ZodString>;
     items: z.ZodArray<z.ZodObject<{
         compras: z.ZodOptional<z.ZodArray<z.ZodObject<{
             compra_id: z.ZodString;
@@ -65,6 +66,7 @@ export declare const calculationInputSchema: z.ZodObject<{
         vendible: z.ZodBoolean;
         inventariable: z.ZodBoolean;
         unidad_base_id: z.ZodString;
+        unidad_descripcion: z.ZodOptional<z.ZodString>;
         activo: z.ZodOptional<z.ZodBoolean>;
         fuentes_fallback: z.ZodOptional<z.ZodObject<{
             historico_archivo: z.ZodOptional<z.ZodString>;

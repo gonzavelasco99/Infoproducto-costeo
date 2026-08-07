@@ -211,6 +211,7 @@ describe("motor determinista de costeo beta", () => {
     };
     const input = baseInput([raw, finished]);
     input.capacidad_normal_horas = "100";
+    input.horas_mod_disponibles = "80";
     input.configuracion.alicuota_impuesto_resultado = "0.3";
     input.costos.push({
       costo_id: ids.cost,
@@ -229,6 +230,11 @@ describe("motor determinista de costeo beta", () => {
       tasa_fija_productiva_normal: "10",
       costo_fijo_absorbido: "200",
       variacion_capacidad: "800"
+    });
+    expect(result.eficiencia_mod).toEqual({
+      horas_disponibles: "80",
+      horas_ocupadas: "20",
+      cociente_ocupacion: "0.25"
     });
     expect(result.resultados_item[0]).toMatchObject({
       costo_productivo_normal_unitario: "140",
@@ -252,6 +258,87 @@ describe("motor determinista de costeo beta", () => {
     expect(result.validaciones[0]).toMatchObject({
       severidad: "error_bloqueante",
       fase: "captura"
+    });
+  });
+
+  it("construye el estado de resultados por categoría e incluye Ganancias estimado", () => {
+    const resale = purchasedItem({
+      item_id: ids.resale,
+      codigo: "REV-001",
+      tipo_item: "mercaderia_reventa",
+      vendible: true,
+      venta: { cantidad_base: "10", precio_neto_unitario: "200" }
+    });
+    const input = baseInput([resale]);
+    input.configuracion.alicuota_impuesto_resultado = "0.3";
+    const categories = [
+      ["produccion", "100"],
+      ["administracion", "50"],
+      ["comercializacion", "40"],
+      ["logistica", "30"],
+      ["impuestos_tasas", "10"],
+      ["financieros", "20"],
+      ["amortizaciones_depreciaciones", "30"]
+    ] as const;
+    input.costos = categories.map(([categoria, monto], index) => ({
+      costo_id: `00000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`,
+      nombre: categoria,
+      categoria,
+      monto_neto_total: monto,
+      trazabilidad: "indirecto",
+      comportamiento: "fijo",
+      driver: { tipo: "ventas_netas" }
+    }));
+
+    const result = calculate(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.estado_resultados).toEqual({
+      ingresos_ventas: "2000",
+      costos_directos: "1000",
+      margen_bruto: "1000",
+      gastos_operativos: "100",
+      gastos_administrativos: "50",
+      gastos_comerciales: "40",
+      gastos_logisticos: "30",
+      margen_operativo: "780",
+      impuestos: "226",
+      impuesto_ganancias_estimado: "216",
+      gastos_financieros: "20",
+      amortizaciones: "30",
+      margen_neto: "504"
+    });
+  });
+
+  it("habilita el resultado neto por empresa y producto cuando hay impuestos cargados sin alícuota", () => {
+    const resale = purchasedItem({
+      item_id: ids.resale,
+      codigo: "REV-IMP",
+      tipo_item: "mercaderia_reventa",
+      vendible: true,
+      venta: { cantidad_base: "10", precio_neto_unitario: "200" }
+    });
+    const input = baseInput([resale]);
+    input.costos = [{
+      costo_id: ids.cost,
+      nombre: "Impuestos y tasas",
+      categoria: "impuestos_tasas",
+      monto_neto_total: "100",
+      trazabilidad: "indirecto",
+      comportamiento: "fijo",
+      driver: { tipo: "ventas_netas" }
+    }];
+
+    const result = calculate(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.capas_resultado.find((layer) => layer.codigo === "resultado_neto_estimado")?.estado).toBe("calculado");
+    expect(result.resultados_item[0]?.resultado_neto_estimado).toBe("900");
+    expect(result.resultados_item[0]).toMatchObject({
+      resultado_operativo_trazabilidad: "1000",
+      costo_directo_unitario: "100",
+      costo_indirecto_unitario: "10",
+      costo_completo_unitario_gerencial: "110"
     });
   });
 

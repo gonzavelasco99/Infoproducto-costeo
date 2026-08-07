@@ -70,6 +70,9 @@ function validateItem(item, index, itemsById, issues) {
     });
     if (item.receta) {
         validateDecimal(item.receta.cantidad_salida_base, `${base}/receta/cantidad_salida_base`, issues, { positive: true });
+        if (item.receta.componentes.length > 20) {
+            issues.push(issue("VAL-LIM-003", "La receta del tier gratuito admite como máximo veinte materiales.", `${base}/receta/componentes`));
+        }
         const seen = new Set();
         item.receta.componentes.forEach((component, componentIndex) => {
             const componentPath = `${base}/receta/componentes/${componentIndex}`;
@@ -159,14 +162,8 @@ export function validateCalculationInput(input) {
     if (input.capacidad_normal_horas !== undefined) {
         validateDecimal(input.capacidad_normal_horas, "/capacidad_normal_horas", issues, { positive: true });
     }
-    else if (input.configuracion.tipo_actividad !== "reventa") {
-        issues.push(issue("VAL-CAP-001", "Sin capacidad normal se puede calcular costo directo, pero no costo productivo normal ni variación de capacidad.", "/capacidad_normal_horas", undefined, {
-            severidad: "recomendacion_mejora",
-            fase: "pre_calculo",
-            alcance: "capa de costo productivo normal",
-            remediacion: "Informá las horas productivas normales del período para habilitar esa capa.",
-            formula_ids: ["CAP-001", "CAP-002", "RES-008"]
-        }));
+    if (input.horas_mod_disponibles !== undefined) {
+        validateDecimal(input.horas_mod_disponibles, "/horas_mod_disponibles", issues, { positive: true });
     }
     const itemsById = new Map(input.items.map((item) => [item.item_id, item]));
     if (itemsById.size !== input.items.length) {

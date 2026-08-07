@@ -227,6 +227,7 @@ function allocateIndirect(cost, itemResults, issues) {
         const allocation = index === recipients.length - 1 ? amount.minus(assigned) : amount.times(weight);
         assigned = assigned.plus(allocation);
         recipient.indirect = recipient.indirect.plus(allocation);
+        recipient.indirectByCategory.set(cost.categoria, (recipient.indirectByCategory.get(cost.categoria) ?? ZERO).plus(allocation));
         if (cost.comportamiento === "variable")
             recipient.variable = recipient.variable.plus(allocation);
         else
@@ -243,14 +244,22 @@ function allocateIndirect(cost, itemResults, issues) {
         };
     });
 }
-function presentItemResult(entry, productiveRate, taxRate) {
+function presentItemResult(entry, productiveRate, taxRate, taxContextAvailable) {
     const margin = entry.sales.minus(entry.direct);
     const contribution = entry.sales.minus(entry.variable);
-    const traceResult = margin.minus(entry.indirect);
+    const categoryTotal = (...categories) => sum(categories.map((category) => entry.indirectByCategory.get(category) ?? ZERO));
+    const operatingIndirect = categoryTotal("produccion", "generales", "operativos", "administracion", "comercializacion", "logistica");
+    const taxesAndFees = categoryTotal("impuestos_tasas");
+    const financialExpenses = categoryTotal("financieros");
+    const depreciation = categoryTotal("amortizaciones_depreciaciones");
+    const traceResult = margin.minus(operatingIndirect);
+    const resultBeforeIncomeTax = traceResult.minus(taxesAndFees).minus(financialExpenses).minus(depreciation);
     const behaviorResult = contribution.minus(entry.fixed);
     const fullCost = entry.direct.plus(entry.indirect);
     const productiveNormalTotal = productiveRate === undefined ? undefined : entry.direct.plus(entry.laborHours.times(productiveRate));
-    const estimatedTax = taxRate === undefined ? undefined : Decimal.max(traceResult, ZERO).times(taxRate);
+    const estimatedTax = taxRate === undefined
+        ? taxContextAvailable ? ZERO : undefined
+        : Decimal.max(resultBeforeIncomeTax, ZERO).times(taxRate);
     return {
         item_id: entry.item.item_id,
         codigo: entry.item.codigo,
@@ -258,6 +267,8 @@ function presentItemResult(entry, productiveRate, taxRate) {
         unidades_vendidas_netas: decimalString(entry.units),
         costo_directo: decimalString(entry.direct),
         costo_indirecto_operativo_asignado: decimalString(entry.indirect),
+        costo_directo_unitario: entry.units.gt(0) ? decimalString(entry.direct.div(entry.units)) : null,
+        costo_indirecto_unitario: entry.units.gt(0) ? decimalString(entry.indirect.div(entry.units)) : null,
         costo_variable_total: decimalString(entry.variable),
         costo_fijo_total: decimalString(entry.fixed),
         margen_bruto: decimalString(margin),
@@ -270,8 +281,8 @@ function presentItemResult(entry, productiveRate, taxRate) {
             ? decimalString(productiveNormalTotal.div(entry.units))
             : null,
         precio_umbral_contribucion_cero: entry.units.gt(0) ? decimalString(entry.variable.div(entry.units)) : null,
-        impuesto_resultado_estimado: estimatedTax === undefined ? null : decimalString(estimatedTax),
-        resultado_neto_estimado: estimatedTax === undefined ? null : decimalString(traceResult.minus(estimatedTax))
+        impuesto_resultado_estimado: estimatedTax === undefined ? null : decimalString(taxesAndFees.plus(estimatedTax)),
+        resultado_neto_estimado: estimatedTax === undefined ? null : decimalString(resultBeforeIncomeTax.minus(estimatedTax))
     };
 }
 export function calculate(input) {
@@ -301,6 +312,9 @@ export function calculate(input) {
     for (const item of input.items) {
         const sale = saleTotals(item);
         const unit = unitCosts.get(item.item_id) ?? { total: ZERO, variable: ZERO, fixed: ZERO };
+        const manufacturedShare = item.origen_item === "mixto"
+            ? ONE.minus(D(item.participacion_comprada ?? "0.5"))
+            : ONE;
         itemResults.set(item.item_id, {
             item,
             sales: sale.sales,
@@ -309,7 +323,8 @@ export function calculate(input) {
             indirect: ZERO,
             variable: unit.variable.times(sale.units),
             fixed: unit.fixed.times(sale.units),
-            laborHours: sum((item.mano_obra ?? []).map((labor) => D(labor.horas_estandar))).times(sale.units)
+            laborHours: sum((item.mano_obra ?? []).map((labor) => D(labor.horas_estandar))).times(sale.units).times(manufacturedShare),
+            indirectByCategory: new Map()
         });
     }
     const allocations = [];
@@ -367,9 +382,6 @@ export function calculate(input) {
     const taxRate = input.configuracion.alicuota_impuesto_resultado === undefined
         ? undefined
         : D(input.configuracion.alicuota_impuesto_resultado);
-    const presented = [...itemResults.values()]
-        .filter((entry) => entry.item.vendible)
-        .map((entry) => presentItemResult(entry, productiveRate, taxRate));
     const totalCostsLoaded = sum(input.costos.map((cost) => D(cost.monto_neto_total))).plus(sum([...itemResults.values()].map((entry) => {
         const unit = unitCosts.get(entry.item.item_id);
         return unit ? unit.total.times(entry.units) : ZERO;
@@ -377,6 +389,32 @@ export function calculate(input) {
     const totalAssigned = sum([...itemResults.values()].map((entry) => entry.direct.plus(entry.indirect)));
     const traceResult = sum([...itemResults.values()].map((entry) => entry.sales.minus(entry.direct).minus(entry.indirect)));
     const behaviorResult = sum([...itemResults.values()].map((entry) => entry.sales.minus(entry.variable).minus(entry.fixed)));
+    const totalSales = sum([...itemResults.values()].map((entry) => entry.sales));
+    const totalDirect = sum([...itemResults.values()].map((entry) => entry.direct));
+    const indirectByCategory = (...categories) => sum(input.costos
+        .filter((cost) => cost.trazabilidad === "indirecto" && categories.includes(cost.categoria))
+        .map((cost) => D(cost.monto_neto_total)));
+    const operatingExpenses = indirectByCategory("produccion", "generales", "operativos");
+    const administrativeExpenses = indirectByCategory("administracion");
+    const commercialExpenses = indirectByCategory("comercializacion");
+    const logisticsExpenses = indirectByCategory("logistica");
+    const taxesAndFees = indirectByCategory("impuestos_tasas");
+    const financialExpenses = indirectByCategory("financieros");
+    const depreciation = indirectByCategory("amortizaciones_depreciaciones");
+    const grossMargin = totalSales.minus(totalDirect);
+    const operatingMargin = grossMargin
+        .minus(operatingExpenses)
+        .minus(administrativeExpenses)
+        .minus(commercialExpenses)
+        .minus(logisticsExpenses);
+    const incomeTaxBase = Decimal.max(operatingMargin.minus(financialExpenses).minus(depreciation).minus(taxesAndFees), ZERO);
+    const estimatedIncomeTax = taxRate === undefined ? ZERO : incomeTaxBase.times(taxRate);
+    const totalTaxes = taxesAndFees.plus(estimatedIncomeTax);
+    const netMargin = operatingMargin.minus(totalTaxes).minus(financialExpenses).minus(depreciation);
+    const taxContextAvailable = taxRate !== undefined || taxesAndFees.gt(0);
+    const presented = [...itemResults.values()]
+        .filter((entry) => entry.item.vendible)
+        .map((entry) => presentItemResult(entry, productiveRate, taxRate, taxContextAvailable));
     const costDifference = totalCostsLoaded.minus(totalAssigned);
     const viewDifference = traceResult.minus(behaviorResult);
     const tolerance = D(input.tolerancia_conciliacion ?? "0.01");
@@ -409,13 +447,11 @@ export function calculate(input) {
         { codigo: "margen_bruto", estado: "calculado" },
         { codigo: "contribucion_marginal", estado: "calculado" },
         { codigo: "resultado_operativo", estado: "calculado" },
-        taxRate === undefined
-            ? { codigo: "resultado_neto_estimado", estado: "no_disponible", motivo: "No se informó una alícuota estimada de impuesto al resultado." }
+        !taxContextAvailable
+            ? { codigo: "resultado_neto_estimado", estado: "no_disponible", motivo: "No se informó una alícuota de Ganancias ni se cargaron impuestos del período." }
             : { codigo: "resultado_neto_estimado", estado: "calculado" }
     ];
-    const netCompany = taxRate === undefined
-        ? null
-        : decimalString(sum(presented.map((entry) => D(entry.resultado_neto_estimado ?? 0))));
+    const netCompany = decimalString(netMargin);
     const result = {
         ok: true,
         engine_version: ENGINE_VERSION,
@@ -436,10 +472,32 @@ export function calculate(input) {
         }),
         asignaciones: allocations,
         resultados_item: presented,
+        estado_resultados: {
+            ingresos_ventas: decimalString(totalSales),
+            costos_directos: decimalString(totalDirect),
+            margen_bruto: decimalString(grossMargin),
+            gastos_operativos: decimalString(operatingExpenses),
+            gastos_administrativos: decimalString(administrativeExpenses),
+            gastos_comerciales: decimalString(commercialExpenses),
+            gastos_logisticos: decimalString(logisticsExpenses),
+            margen_operativo: decimalString(operatingMargin),
+            impuestos: decimalString(totalTaxes),
+            impuesto_ganancias_estimado: decimalString(estimatedIncomeTax),
+            gastos_financieros: decimalString(financialExpenses),
+            amortizaciones: decimalString(depreciation),
+            margen_neto: decimalString(netMargin)
+        },
         resultado_empresa: decimalString(traceResult),
         resultado_neto_empresa_estimado: netCompany,
         capas_resultado: resultLayers,
         capacidad: capacity,
+        eficiencia_mod: input.horas_mod_disponibles === undefined
+            ? null
+            : {
+                horas_disponibles: decimalString(D(input.horas_mod_disponibles)),
+                horas_ocupadas: decimalString(appliedHours),
+                cociente_ocupacion: decimalString(appliedHours.div(D(input.horas_mod_disponibles)))
+            },
         conciliacion: {
             costos_cargados: decimalString(totalCostsLoaded),
             costos_asignados: decimalString(totalAssigned),

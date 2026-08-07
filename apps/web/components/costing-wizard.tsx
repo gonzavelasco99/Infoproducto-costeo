@@ -18,12 +18,21 @@ type WizardStep = "diagnostico" | "productos" | "costos" | "resultados";
 
 interface ConfigurationForm {
   tipoActividad: BusinessConfigurationInput["tipo_actividad"];
-  objetivo: BusinessConfigurationInput["objetivo"];
-  madurezDatos: BusinessConfigurationInput["madurez_datos"];
   condicionFiscal: BusinessConfigurationInput["condicion_fiscal"];
-  capacidadNormalHoras: string;
   alicuotaImpuestoResultado: string;
+  salarioModPeriodo: string;
+  horasModDisponibles: string;
+  driverIndirectos: Exclude<DriverKind, "manual">;
   aceptaTerminos: boolean;
+}
+
+interface MaterialForm {
+  key: number;
+  material: string;
+  unidadConsumo: string;
+  costoUnitarioNeto: string;
+  mermaPorcentaje: string;
+  consumoProducto: string;
 }
 
 interface ProductForm {
@@ -31,35 +40,41 @@ interface ProductForm {
   codigo: string;
   nombre: string;
   origen: Extract<OrigenItem, "comprado" | "fabricado" | "mixto">;
-  unidadesVendidas: string;
+  cantidadPeriodo: string;
   precioVentaNeto: string;
   costoCompraNeto: string;
-  costoMaterialNeto: string;
-  cantidadMaterial: string;
-  merma: string;
-  horasMod: string;
-  costoHoraMod: string;
+  materiales: MaterialForm[];
+  produccionPorHoraHombre: string;
   participacionComprada: string;
 }
 
 interface PeriodCostForm {
   key: number;
   nombre: string;
-  categoria: "produccion" | "administracion" | "comercializacion" | "logistica" | "generales";
+  categoria: "produccion" | "administracion" | "comercializacion" | "logistica" | "generales" | "impuestos_tasas" | "financieros" | "amortizaciones_depreciaciones";
   montoNeto: string;
-  comportamiento: "fijo" | "variable";
-  driver: DriverKind;
 }
 
 const initialConfiguration: ConfigurationForm = {
   tipoActividad: "fabricacion",
-  objetivo: "ambos",
-  madurezDatos: "inicial",
   condicionFiscal: "responsable_inscripto",
-  capacidadNormalHoras: "160",
   alicuotaImpuestoResultado: "",
+  salarioModPeriodo: "240000",
+  horasModDisponibles: "160",
+  driverIndirectos: "horas_mod",
   aceptaTerminos: false
 };
+
+function makeMaterial(key: number): MaterialForm {
+  return {
+    key,
+    material: key === 1 ? "Material principal" : `Material ${key}`,
+    unidadConsumo: "unidad",
+    costoUnitarioNeto: "1000",
+    mermaPorcentaje: "5",
+    consumoProducto: "1"
+  };
+}
 
 function makeProduct(key: number, activity: ConfigurationForm["tipoActividad"]): ProductForm {
   const origin = activity === "reventa" ? "comprado" : activity === "mixto" ? "mixto" : "fabricado";
@@ -68,14 +83,11 @@ function makeProduct(key: number, activity: ConfigurationForm["tipoActividad"]):
     codigo: `SKU-${String(key).padStart(3, "0")}`,
     nombre: key === 1 ? "Producto principal" : `Producto ${key}`,
     origen: origin,
-    unidadesVendidas: "100",
+    cantidadPeriodo: "100",
     precioVentaNeto: "2000",
     costoCompraNeto: "1200",
-    costoMaterialNeto: "1000",
-    cantidadMaterial: "1",
-    merma: "0.05",
-    horasMod: "0.5",
-    costoHoraMod: "2400",
+    materiales: [makeMaterial(1)],
+    produccionPorHoraHombre: "2",
     participacionComprada: "0.25"
   };
 }
@@ -85,17 +97,13 @@ const initialCosts: PeriodCostForm[] = [
     key: 1,
     nombre: "Estructura productiva",
     categoria: "produccion",
-    montoNeto: "20000",
-    comportamiento: "fijo",
-    driver: "horas_mod"
+    montoNeto: "20000"
   },
   {
     key: 2,
     nombre: "Administración general",
     categoria: "administracion",
-    montoNeto: "15000",
-    comportamiento: "fijo",
-    driver: "ventas_netas"
+    montoNeto: "15000"
   }
 ];
 
@@ -119,7 +127,7 @@ const driverLabels: Record<DriverKind, string> = {
   manual: "Base manual",
   costo_directo: "Costo directo",
   ventas_netas: "Ventas netas",
-  unidades_vendidas: "Unidades vendidas",
+  unidades_vendidas: "Unidades del período",
   horas_mod: "Horas de mano de obra",
   uniforme: "Distribución uniforme"
 };
@@ -137,12 +145,30 @@ function money(value: string | null | undefined): string {
   }).format(Number(value));
 }
 
-function recommendationFor(category: PeriodCostForm["categoria"]): { driver: DriverKind; reason: string } {
-  if (category === "produccion") return { driver: "horas_mod", reason: "Relaciona la estructura productiva con el tiempo requerido por cada SKU." };
-  if (category === "logistica") return { driver: "unidades_vendidas", reason: "Aproxima el esfuerzo logístico mediante el volumen despachado." };
-  if (category === "comercializacion") return { driver: "ventas_netas", reason: "Relaciona el costo comercial con el valor vendido." };
-  if (category === "administracion") return { driver: "ventas_netas", reason: "Proxy simple y visible para el tier gratuito." };
-  return { driver: "uniforme", reason: "Se usa cuando no existe una base causal más representativa." };
+function normalizedDecimal(value: number): string {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(12).replace(/\.?0+$/, "");
+}
+
+function inverseDecimal(value: string): string {
+  const number = Number(value);
+  return number > 0 ? normalizedDecimal(1 / number) : "0";
+}
+
+function percentToFraction(value: string): string {
+  const number = Number(value);
+  return Number.isFinite(number) ? normalizedDecimal(number / 100) : "0";
+}
+
+function fractionToPercent(value: string): string {
+  const number = Number(value);
+  return Number.isFinite(number) ? normalizedDecimal(number * 100) : "0";
+}
+
+function percentageOfSales(value: string, sales: string): string {
+  const salesNumber = Number(sales);
+  if (!Number.isFinite(salesNumber) || salesNumber === 0) return "—";
+  return new Intl.NumberFormat("es-AR", { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(Number(value) / salesNumber);
 }
 
 function ValidationCenter({ issues }: { issues: ValidationIssue[] }) {
@@ -181,6 +207,7 @@ function originForActivity(activity: ConfigurationForm["tipoActividad"], current
 
 export function CostingWizard() {
   const [step, setStep] = useState<WizardStep>("diagnostico");
+  const [diagnosticCompleted, setDiagnosticCompleted] = useState(false);
   const [configuration, setConfiguration] = useState<ConfigurationForm>(initialConfiguration);
   const [products, setProducts] = useState<ProductForm[]>(() => [makeProduct(1, initialConfiguration.tipoActividad)]);
   const [costs, setCosts] = useState<PeriodCostForm[]>(initialCosts);
@@ -206,33 +233,53 @@ export function CostingWizard() {
     return () => worker.terminate();
   }, []);
 
+  const totalOccupiedHours = useMemo(() => products.reduce((total, product) => {
+    if (product.origen === "comprado") return total;
+    const outputPerHour = Number(product.produccionPorHoraHombre);
+    const periodQuantity = Number(product.cantidadPeriodo);
+    const manufacturedShare = product.origen === "mixto" ? 1 - Number(product.participacionComprada) : 1;
+    if (outputPerHour <= 0 || periodQuantity < 0 || manufacturedShare < 0) return total;
+    return total + (periodQuantity * manufacturedShare) / outputPerHour;
+  }, 0), [products]);
+
+  const availableLaborHours = Number(configuration.horasModDisponibles);
+  const laborCostPerHour = availableLaborHours > 0
+    ? Number(configuration.salarioModPeriodo) / availableLaborHours
+    : 0;
+
   const input = useMemo<CalculationInput>(() => {
     const items: ItemInput[] = [];
     for (const product of products) {
       const productId = idFor(1000 + product.key);
-      const rawId = idFor(2000 + product.key);
       const purchaseId = idFor(3000 + product.key);
       const laborId = idFor(4000 + product.key);
       const isManufactured = product.origen === "fabricado" || product.origen === "mixto";
       const isPurchased = product.origen === "comprado" || product.origen === "mixto";
-
-      if (isManufactured) {
+      const components = isManufactured ? product.materiales.map((material) => {
+        const rawSlot = 200000 + product.key * 100 + material.key;
+        const rawId = idFor(rawSlot);
         items.push({
           item_id: rawId,
-          codigo: `MP-${String(product.key).padStart(3, "0")}`,
-          nombre: `Material principal · ${product.nombre}`,
+          codigo: `MP-${String(product.key).padStart(2, "0")}-${String(material.key).padStart(2, "0")}`,
+          nombre: material.material || `Material ${material.key}`,
           tipo_item: "materia_prima",
           origen_item: "comprado",
           vendible: false,
           inventariable: true,
           unidad_base_id: UNIT_ID,
+          unidad_descripcion: material.unidadConsumo || "unidad",
           compras: [{
-            compra_id: idFor(5000 + product.key),
+            compra_id: idFor(500000 + product.key * 100 + material.key),
             cantidad_base: "1",
-            precio_neto_unitario: product.costoMaterialNeto
+            precio_neto_unitario: material.costoUnitarioNeto
           }]
         });
-      }
+        return {
+          item_componente_id: rawId,
+          cantidad_neta: material.consumoProducto,
+          merma_estandar: percentToFraction(material.mermaPorcentaje)
+        };
+      }) : [];
 
       items.push({
         item_id: productId,
@@ -253,22 +300,18 @@ export function CostingWizard() {
         ...(isManufactured ? {
           receta: {
             cantidad_salida_base: "1",
-            componentes: [{
-              item_componente_id: rawId,
-              cantidad_neta: product.cantidadMaterial,
-              merma_estandar: product.merma
-            }]
+            componentes: components
           },
           mano_obra: [{
             rol_id: laborId,
-            horas_estandar: product.horasMod,
-            costo_hora_completo: product.costoHoraMod,
+            horas_estandar: inverseDecimal(product.produccionPorHoraHombre),
+            costo_hora_completo: normalizedDecimal(laborCostPerHour),
             comportamiento: "variable" as const
           }]
         } : {}),
         ...(product.origen === "mixto" ? { participacion_comprada: product.participacionComprada } : {}),
         venta: {
-          cantidad_base: product.unidadesVendidas,
+          cantidad_base: product.cantidadPeriodo,
           precio_neto_unitario: product.precioVentaNeto
         }
       });
@@ -279,19 +322,19 @@ export function CostingWizard() {
       calculation_id: crypto.randomUUID(),
       configuracion: {
         tipo_actividad: configuration.tipoActividad,
-        objetivo: configuration.objetivo,
-        madurez_datos: configuration.madurezDatos,
+        objetivo: "ambos",
+        madurez_datos: "inicial",
         condicion_fiscal: configuration.condicionFiscal,
         canal_default: "venta_general",
         importes_sin_iva: true,
-        ...(configuration.alicuotaImpuestoResultado.trim() === ""
+        ...(configuration.condicionFiscal !== "responsable_inscripto" || configuration.alicuotaImpuestoResultado.trim() === ""
           ? {}
           : { alicuota_impuesto_resultado: configuration.alicuotaImpuestoResultado })
       },
       moneda_base: "ARS",
-      ...(configuration.tipoActividad === "reventa" || configuration.capacidadNormalHoras.trim() === ""
+      ...(configuration.tipoActividad === "reventa"
         ? {}
-        : { capacidad_normal_horas: configuration.capacidadNormalHoras }),
+        : { horas_mod_disponibles: configuration.horasModDisponibles }),
       items,
       costos: costs.map((cost) => ({
         costo_id: idFor(6000 + cost.key),
@@ -299,14 +342,20 @@ export function CostingWizard() {
         categoria: cost.categoria,
         monto_neto_total: cost.montoNeto,
         trazabilidad: "indirecto" as const,
-        comportamiento: cost.comportamiento,
-        driver: { tipo: cost.driver }
+        comportamiento: "fijo" as const,
+        driver: { tipo: configuration.driverIndirectos }
       }))
     };
-  }, [configuration, costs, products]);
+  }, [configuration, costs, laborCostPerHour, products]);
 
   const changeActivity = (activity: ConfigurationForm["tipoActividad"]) => {
-    setConfiguration((current) => ({ ...current, tipoActividad: activity }));
+    setConfiguration((current) => ({
+      ...current,
+      tipoActividad: activity,
+      driverIndirectos: activity === "reventa" && current.driverIndirectos === "horas_mod"
+        ? "ventas_netas"
+        : current.driverIndirectos
+    }));
     setProducts((current) => current.map((product) => ({
       ...product,
       origen: originForActivity(activity, product.origen)
@@ -316,16 +365,53 @@ export function CostingWizard() {
     } else if (!costs.some((cost) => cost.categoria === "produccion")) {
       setCosts((current) => [initialCosts[0] as PeriodCostForm, ...current]);
     }
+    setDiagnosticCompleted(false);
     setResult(null);
   };
 
   const updateConfiguration = <K extends keyof ConfigurationForm>(field: K, value: ConfigurationForm[K]) => {
     setConfiguration((current) => ({ ...current, [field]: value }));
+    setDiagnosticCompleted(false);
+    setResult(null);
+  };
+
+  const changeFiscalCondition = (condition: ConfigurationForm["condicionFiscal"]) => {
+    setConfiguration((current) => ({
+      ...current,
+      condicionFiscal: condition,
+      alicuotaImpuestoResultado: condition === "responsable_inscripto" ? current.alicuotaImpuestoResultado : ""
+    }));
+    setDiagnosticCompleted(false);
     setResult(null);
   };
 
   const updateProduct = <K extends keyof ProductForm>(key: number, field: K, value: ProductForm[K]) => {
     setProducts((current) => current.map((product) => product.key === key ? { ...product, [field]: value } : product));
+    setResult(null);
+  };
+
+  const updateMaterial = <K extends keyof MaterialForm>(productKey: number, materialKey: number, field: K, value: MaterialForm[K]) => {
+    setProducts((current) => current.map((product) => product.key !== productKey ? product : {
+      ...product,
+      materiales: product.materiales.map((material) => material.key === materialKey ? { ...material, [field]: value } : material)
+    }));
+    setResult(null);
+  };
+
+  const addMaterial = (productKey: number) => {
+    setProducts((current) => current.map((product) => {
+      if (product.key !== productKey || product.materiales.length >= 20) return product;
+      const nextKey = Math.max(0, ...product.materiales.map((material) => material.key)) + 1;
+      return { ...product, materiales: [...product.materiales, makeMaterial(nextKey)] };
+    }));
+    setResult(null);
+  };
+
+  const removeMaterial = (productKey: number, materialKey: number) => {
+    setProducts((current) => current.map((product) => product.key !== productKey || product.materiales.length === 1 ? product : {
+      ...product,
+      materiales: product.materiales.filter((material) => material.key !== materialKey)
+    }));
     setResult(null);
   };
 
@@ -342,14 +428,7 @@ export function CostingWizard() {
   };
 
   const updateCost = <K extends keyof PeriodCostForm>(key: number, field: K, value: PeriodCostForm[K]) => {
-    setCosts((current) => current.map((cost) => {
-      if (cost.key !== key) return cost;
-      if (field === "categoria") {
-        const category = value as PeriodCostForm["categoria"];
-        return { ...cost, categoria: category, driver: recommendationFor(category).driver };
-      }
-      return { ...cost, [field]: value };
-    }));
+    setCosts((current) => current.map((cost) => cost.key === key ? { ...cost, [field]: value } : cost));
     setResult(null);
   };
 
@@ -359,9 +438,7 @@ export function CostingWizard() {
       key,
       nombre: "Nuevo costo del período",
       categoria: "generales",
-      montoNeto: "0",
-      comportamiento: "fijo",
-      driver: "uniforme"
+      montoNeto: "0"
     }]);
   };
 
@@ -389,48 +466,68 @@ export function CostingWizard() {
   };
 
   const hydrateFromInput = (imported: CalculationInput) => {
-    setConfiguration({
-      tipoActividad: imported.configuracion.tipo_actividad,
-      objetivo: imported.configuracion.objetivo,
-      madurezDatos: imported.configuracion.madurez_datos,
-      condicionFiscal: imported.configuracion.condicion_fiscal,
-      capacidadNormalHoras: imported.capacidad_normal_horas ?? "",
-      alicuotaImpuestoResultado: imported.configuracion.alicuota_impuesto_resultado ?? "",
-      aceptaTerminos: true
-    });
     const byId = new Map(imported.items.map((item) => [item.item_id, item]));
     const importedProducts = imported.items.filter((item) => item.vendible).slice(0, 5).map((item, index): ProductForm => {
-      const component = item.receta?.componentes[0];
-      const raw = component === undefined ? undefined : byId.get(component.item_componente_id);
       return {
         key: index + 1,
         codigo: item.codigo,
         nombre: item.nombre,
         origen: item.origen_item === "mixto" ? "mixto" : item.origen_item === "fabricado" ? "fabricado" : "comprado",
-        unidadesVendidas: item.venta?.cantidad_base ?? "0",
+        cantidadPeriodo: item.venta?.cantidad_base ?? "0",
         precioVentaNeto: item.venta?.precio_neto_unitario ?? "0",
         costoCompraNeto: item.compras?.[0]?.precio_neto_unitario ?? "0",
-        costoMaterialNeto: raw?.compras?.[0]?.precio_neto_unitario ?? "0",
-        cantidadMaterial: component?.cantidad_neta ?? "1",
-        merma: component?.merma_estandar ?? "0",
-        horasMod: item.mano_obra?.[0]?.horas_estandar ?? "0",
-        costoHoraMod: item.mano_obra?.[0]?.costo_hora_completo ?? "0",
+        materiales: (item.receta?.componentes ?? []).slice(0, 20).map((component, componentIndex) => {
+          const raw = byId.get(component.item_componente_id);
+          return {
+            key: componentIndex + 1,
+            material: raw?.nombre ?? `Material ${componentIndex + 1}`,
+            unidadConsumo: raw?.unidad_descripcion ?? "unidad",
+            costoUnitarioNeto: raw?.compras?.[0]?.precio_neto_unitario ?? "0",
+            mermaPorcentaje: fractionToPercent(component.merma_estandar),
+            consumoProducto: component.cantidad_neta
+          };
+        }).concat(item.receta?.componentes.length ? [] : [makeMaterial(1)]),
+        produccionPorHoraHombre: inverseDecimal(item.mano_obra?.[0]?.horas_estandar ?? "0"),
         participacionComprada: item.participacion_comprada ?? "0.5"
       };
     });
-    setProducts(importedProducts.length > 0 ? importedProducts : [makeProduct(1, imported.configuracion.tipo_actividad)]);
+    const productsToLoad = importedProducts.length > 0 ? importedProducts : [makeProduct(1, imported.configuracion.tipo_actividad)];
+    const importedOccupiedHours = productsToLoad.reduce((total, product) => {
+      if (product.origen === "comprado") return total;
+      const share = product.origen === "mixto" ? 1 - Number(product.participacionComprada) : 1;
+      const rate = Number(product.produccionPorHoraHombre);
+      return rate > 0 ? total + Number(product.cantidadPeriodo) * share / rate : total;
+    }, 0);
+    const importedHourlyCost = imported.items.find((item) => (item.mano_obra?.length ?? 0) > 0)?.mano_obra?.[0]?.costo_hora_completo ?? "0";
+    const importedAvailableHours = imported.horas_mod_disponibles
+      ?? imported.capacidad_normal_horas
+      ?? (importedOccupiedHours > 0 ? normalizedDecimal(importedOccupiedHours) : "160");
+    const requestedDriver = imported.costos.find((cost) => cost.trazabilidad === "indirecto")?.driver?.tipo;
+    setConfiguration({
+      tipoActividad: imported.configuracion.tipo_actividad,
+      condicionFiscal: imported.configuracion.condicion_fiscal,
+      alicuotaImpuestoResultado: imported.configuracion.condicion_fiscal === "responsable_inscripto"
+        ? imported.configuracion.alicuota_impuesto_resultado ?? ""
+        : "",
+      salarioModPeriodo: normalizedDecimal(Number(importedHourlyCost) * Number(importedAvailableHours)),
+      horasModDisponibles: importedAvailableHours,
+      driverIndirectos: requestedDriver === undefined || requestedDriver === "manual" ? "uniforme" : requestedDriver,
+      aceptaTerminos: true
+    });
+    setProducts(productsToLoad);
     setCosts(imported.costos.map((cost, index) => ({
       key: index + 1,
       nombre: cost.nombre,
-      categoria: (["produccion", "administracion", "comercializacion", "logistica", "generales"] as const).includes(cost.categoria as PeriodCostForm["categoria"])
+      categoria: (["produccion", "administracion", "comercializacion", "logistica", "generales", "impuestos_tasas", "financieros", "amortizaciones_depreciaciones"] as const).includes(cost.categoria as PeriodCostForm["categoria"])
         ? cost.categoria as PeriodCostForm["categoria"]
         : "generales",
-      montoNeto: cost.monto_neto_total,
-      comportamiento: cost.comportamiento,
-      driver: cost.driver?.tipo ?? "uniforme"
+      montoNeto: cost.monto_neto_total
     })));
     nextProductKey.current = importedProducts.length + 1;
     nextCostKey.current = imported.costos.length + 1;
+    setDiagnosticCompleted(false);
+    setStep("diagnostico");
+    setResult(null);
   };
 
   const importNativeFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -439,10 +536,7 @@ export function CostingWizard() {
     try {
       const imported = await readNativeFile(file);
       hydrateFromInput(imported);
-      setWorking(true);
-      setResult(null);
-      workerRef.current?.postMessage({ ...imported, calculation_id: crypto.randomUUID() });
-      setFileMessage("Archivo validado e importado; la sesión se migró a importes sin IVA y se recalculó.");
+      setFileMessage("Archivo validado e importado. Confirmá el diagnóstico para continuar con esta sesión temporal.");
     } catch (error) {
       setFileMessage(error instanceof Error ? error.message : "No se pudo importar el archivo.");
     } finally {
@@ -456,18 +550,22 @@ export function CostingWizard() {
   return (
     <section className="costing-app" aria-label="Asistente de costeo gratuito">
       <nav className="wizard-progress" aria-label="Progreso de la sesión">
-        {(Object.keys(stepLabels) as WizardStep[]).map((item, index) => (
-          <button
-            className={step === item ? "active" : ""}
-            disabled={item === "resultados" && result === null}
-            key={item}
-            onClick={() => setStep(item)}
-            type="button"
-          >
-            <span>{String(index + 1).padStart(2, "0")}</span>
-            {stepLabels[item]}
-          </button>
-        ))}
+        {(Object.keys(stepLabels) as WizardStep[]).map((item, index) => {
+          const lockedByDiagnosis = !diagnosticCompleted && (item === "productos" || item === "costos");
+          return (
+            <button
+              className={step === item ? "active" : ""}
+              disabled={lockedByDiagnosis || (item === "resultados" && result === null)}
+              key={item}
+              onClick={() => setStep(item)}
+              title={lockedByDiagnosis ? "Aceptá la sesión temporal y continuá desde Diagnóstico para habilitar esta pestaña." : undefined}
+              type="button"
+            >
+              <span>{String(index + 1).padStart(2, "0")}</span>
+              {stepLabels[item]}
+            </button>
+          );
+        })}
       </nav>
 
       <div className="app-layout">
@@ -502,56 +600,68 @@ export function CostingWizard() {
 
               <div className="form-grid">
                 <label>
-                  Objetivo de esta sesión
-                  <select value={configuration.objetivo} onChange={(event) => updateConfiguration("objetivo", event.target.value as ConfigurationForm["objetivo"])}>
-                    <option value="conocer_costos">Conocer costos por producto</option>
-                    <option value="analizar_rentabilidad">Analizar rentabilidad</option>
-                    <option value="ambos">Costos y rentabilidad</option>
-                  </select>
-                </label>
-                <label>
-                  Madurez de los datos
-                  <select value={configuration.madurezDatos} onChange={(event) => updateConfiguration("madurezDatos", event.target.value as ConfigurationForm["madurezDatos"])}>
-                    <option value="inicial">Inicial · datos aproximados</option>
-                    <option value="intermedia">Intermedia · registros parciales</option>
-                    <option value="ordenada">Ordenada · datos periódicos</option>
-                  </select>
-                </label>
-                <label>
                   Condición fiscal
-                  <select value={configuration.condicionFiscal} onChange={(event) => updateConfiguration("condicionFiscal", event.target.value as ConfigurationForm["condicionFiscal"])}>
+                  <select value={configuration.condicionFiscal} onChange={(event) => changeFiscalCondition(event.target.value as ConfigurationForm["condicionFiscal"])}>
                     <option value="responsable_inscripto">Responsable inscripto</option>
                     <option value="monotributista">Monotributista</option>
                     <option value="exento">Exento</option>
                   </select>
                 </label>
                 <label>
-                  Alícuota estimada sobre el resultado <em>opcional</em>
-                  <input inputMode="decimal" value={configuration.alicuotaImpuestoResultado} onChange={(event) => updateConfiguration("alicuotaImpuestoResultado", event.target.value)} />
-                  <small>Ejemplo: 0,30 se carga como 0.30.</small>
+                  Alícuota de Impuesto a las Ganancias <em>opcional</em>
+                  <input
+                    disabled={configuration.condicionFiscal !== "responsable_inscripto"}
+                    inputMode="decimal"
+                    placeholder={configuration.condicionFiscal === "responsable_inscripto" ? "Ej.: 0.30" : "No aplica para la condición seleccionada"}
+                    value={configuration.alicuotaImpuestoResultado}
+                    onChange={(event) => updateConfiguration("alicuotaImpuestoResultado", event.target.value)}
+                  />
+                  <small>{configuration.condicionFiscal === "responsable_inscripto" ? "Ingresala como fracción: 30% se carga 0.30." : "Se habilita únicamente para Responsable inscripto."}</small>
                 </label>
                 {configuration.tipoActividad !== "reventa" && (
                   <label>
-                    Capacidad normal del período <em>horas</em>
-                    <input inputMode="decimal" value={configuration.capacidadNormalHoras} onChange={(event) => updateConfiguration("capacidadNormalHoras", event.target.value)} />
-                    <small>Habilita costo productivo normal y variación de capacidad.</small>
+                    Salario de MOD del período <em>promedio o aproximado</em>
+                    <input inputMode="decimal" value={configuration.salarioModPeriodo} onChange={(event) => updateConfiguration("salarioModPeriodo", event.target.value)} />
+                    <small>Total de salarios de operarios para el mismo período de análisis.</small>
                   </label>
                 )}
+                {configuration.tipoActividad !== "reventa" && (
+                  <label>
+                    Horas hombre disponibles de MOD en el período
+                    <input inputMode="decimal" value={configuration.horasModDisponibles} onChange={(event) => updateConfiguration("horasModDisponibles", event.target.value)} />
+                    <small>Capacidad teórica disponible de los operarios durante el período.</small>
+                  </label>
+                )}
+                <label>
+                  Driver de asignación de costos indirectos
+                  <select value={configuration.driverIndirectos} onChange={(event) => updateConfiguration("driverIndirectos", event.target.value as ConfigurationForm["driverIndirectos"])}>
+                    {Object.entries(driverLabels)
+                      .filter(([key]) => key !== "manual" && !(configuration.tipoActividad === "reventa" && key === "horas_mod"))
+                      .map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                  </select>
+                  <small>El mismo criterio se aplicará a todos los costos y gastos indirectos de esta sesión.</small>
+                </label>
               </div>
 
               <aside className="net-policy">
                 <strong>Política de importes</strong>
-                <p>Todos los costos, gastos y precios se cargan <b>sin IVA</b>. La condición fiscal queda registrada como contexto de la sesión.</p>
+                <p>El objetivo de la sesión es conocer <b>costos y rentabilidad</b>. Todos los costos, gastos y precios se cargan <b>sin IVA</b>.</p>
               </aside>
 
               <label className="consent-check">
-                <input checked={configuration.aceptaTerminos} onChange={(event) => setConfiguration((current) => ({ ...current, aceptaTerminos: event.target.checked }))} type="checkbox" />
+                <input checked={configuration.aceptaTerminos} onChange={(event) => {
+                  setConfiguration((current) => ({ ...current, aceptaTerminos: event.target.checked }));
+                  if (!event.target.checked) setDiagnosticCompleted(false);
+                }} type="checkbox" />
                 <span>Acepto iniciar una sesión temporal sin persistencia en servidor.</span>
               </label>
 
               <div className="flow-actions">
                 <label className="file-input compact">Abrir archivo anterior<input type="file" accept=".zip,.costeo" onChange={importNativeFile} /></label>
-                <button disabled={!configuration.aceptaTerminos} onClick={() => setStep("productos")} type="button">Continuar con productos</button>
+                <button disabled={!configuration.aceptaTerminos} onClick={() => {
+                  setDiagnosticCompleted(true);
+                  setStep("productos");
+                }} type="button">Continuar con productos</button>
               </div>
             </section>
           )}
@@ -590,20 +700,51 @@ export function CostingWizard() {
                             </select>
                           </label>
                         )}
-                        <label>Unidades vendidas<input inputMode="decimal" value={product.unidadesVendidas} onChange={(event) => updateProduct(product.key, "unidadesVendidas", event.target.value)} /></label>
+                        <label>{showManufacturing ? "Unidades fabricadas" : "Unidades vendidas"}<input inputMode="decimal" value={product.cantidadPeriodo} onChange={(event) => updateProduct(product.key, "cantidadPeriodo", event.target.value)} /></label>
                         <label>Precio de venta unitario <em>sin IVA</em><input inputMode="decimal" value={product.precioVentaNeto} onChange={(event) => updateProduct(product.key, "precioVentaNeto", event.target.value)} /></label>
                         {showPurchase && <label>Costo de compra unitario <em>sin IVA</em><input inputMode="decimal" value={product.costoCompraNeto} onChange={(event) => updateProduct(product.key, "costoCompraNeto", event.target.value)} /></label>}
                         {product.origen === "mixto" && <label>Participación comprada <em>fracción</em><input inputMode="decimal" value={product.participacionComprada} onChange={(event) => updateProduct(product.key, "participacionComprada", event.target.value)} /></label>}
                       </div>
                       {showManufacturing && (
                         <div className="subsection">
-                          <div><strong>Receta estándar y MOD promedio</strong><span>Un componente principal en este primer corte conciliado.</span></div>
-                          <div className="form-grid three-columns">
-                            <label>Costo material unitario <em>sin IVA</em><input inputMode="decimal" value={product.costoMaterialNeto} onChange={(event) => updateProduct(product.key, "costoMaterialNeto", event.target.value)} /></label>
-                            <label>Cantidad neta por unidad<input inputMode="decimal" value={product.cantidadMaterial} onChange={(event) => updateProduct(product.key, "cantidadMaterial", event.target.value)} /></label>
-                            <label>Merma estándar <em>fracción</em><input inputMode="decimal" value={product.merma} onChange={(event) => updateProduct(product.key, "merma", event.target.value)} /></label>
-                            <label>Horas MOD por unidad<input inputMode="decimal" value={product.horasMod} onChange={(event) => updateProduct(product.key, "horasMod", event.target.value)} /></label>
-                            <label>Costo completo por hora <em>sin IVA</em><input inputMode="decimal" value={product.costoHoraMod} onChange={(event) => updateProduct(product.key, "costoHoraMod", event.target.value)} /></label>
+                          <div><strong>Receta estándar</strong><span>{product.materiales.length}/20 materiales</span></div>
+                          <div className="recipe-table-wrapper">
+                            <table className="recipe-table">
+                              <thead>
+                                <tr>
+                                  <th>Material</th>
+                                  <th>Unidad de consumo</th>
+                                  <th>Costo unitario <small>sin IVA</small></th>
+                                  <th>Merma estándar <small>%</small></th>
+                                  <th>Consumo del producto</th>
+                                  <th><span className="sr-only">Acciones</span></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {product.materiales.map((material) => (
+                                  <tr key={material.key}>
+                                    <td><input aria-label={`Material ${material.key}`} value={material.material} onChange={(event) => updateMaterial(product.key, material.key, "material", event.target.value)} /></td>
+                                    <td><input aria-label={`Unidad de consumo ${material.key}`} value={material.unidadConsumo} onChange={(event) => updateMaterial(product.key, material.key, "unidadConsumo", event.target.value)} /></td>
+                                    <td><input aria-label={`Costo unitario del material ${material.key}`} inputMode="decimal" value={material.costoUnitarioNeto} onChange={(event) => updateMaterial(product.key, material.key, "costoUnitarioNeto", event.target.value)} /></td>
+                                    <td><input aria-label={`Merma estándar ${material.key}`} inputMode="decimal" value={material.mermaPorcentaje} onChange={(event) => updateMaterial(product.key, material.key, "mermaPorcentaje", event.target.value)} /></td>
+                                    <td><input aria-label={`Consumo del producto ${material.key}`} inputMode="decimal" value={material.consumoProducto} onChange={(event) => updateMaterial(product.key, material.key, "consumoProducto", event.target.value)} /></td>
+                                    <td>{product.materiales.length > 1 && <button aria-label={`Quitar material ${material.key}`} className="text-button danger" onClick={() => removeMaterial(product.key, material.key)} type="button">Quitar</button>}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <button className="secondary add-material-button" disabled={product.materiales.length >= 20} onClick={() => addMaterial(product.key)} type="button">+ Agregar material</button>
+
+                          <div className="labor-section">
+                            <div>
+                              <strong>Mano de obra directa (MOD)</strong>
+                              <span>Las horas ocupadas se calculan como unidades fabricadas ÷ producción por hora hombre. El costo horario proviene del salario ÷ horas disponibles.</span>
+                            </div>
+                            <div className="form-grid">
+                              <label>Producción por hora hombre<input inputMode="decimal" value={product.produccionPorHoraHombre} onChange={(event) => updateProduct(product.key, "produccionPorHoraHombre", event.target.value)} /></label>
+                              <label>Costo horario de MOD <em>calculado</em><input disabled value={money(normalizedDecimal(laborCostPerHour))} /></label>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -626,14 +767,18 @@ export function CostingWizard() {
                 <div>
                   <p className="section-kicker">Costos por categoría</p>
                   <h2>Costos y gastos del período</h2>
-                  <p>Cargalos sin IVA. Recomendamos un driver visible para cada categoría.</p>
+                  <p>Cargalos sin IVA. En este MVP todos se consideran fijos y se asignan con el driver elegido en el diagnóstico.</p>
                 </div>
               </div>
 
+              <aside className="driver-summary">
+                <span>Driver único de la sesión</span>
+                <strong>{driverLabels[configuration.driverIndirectos]}</strong>
+                <small>Se aplicará a todos los costos y gastos indirectos.</small>
+              </aside>
+
               <div className="cost-list">
-                {costs.map((cost) => {
-                  const recommendation = recommendationFor(cost.categoria);
-                  return (
+                {costs.map((cost) => (
                     <article className="editor-card cost-card" key={cost.key}>
                       <div className="editor-card-header">
                         <div><span>Categoría</span><h3>{cost.nombre || "Costo sin nombre"}</h3></div>
@@ -649,30 +794,15 @@ export function CostingWizard() {
                             <option value="comercializacion">Comercialización</option>
                             <option value="logistica">Logística</option>
                             <option value="generales">Generales</option>
+                            <option value="impuestos_tasas">Impuestos/tasas</option>
+                            <option value="financieros">Financieros</option>
+                            <option value="amortizaciones_depreciaciones">Amortizaciones/depreciaciones</option>
                           </select>
                         </label>
                         <label>Monto total <em>sin IVA</em><input inputMode="decimal" value={cost.montoNeto} onChange={(event) => updateCost(cost.key, "montoNeto", event.target.value)} /></label>
-                        <label>
-                          Comportamiento
-                          <select value={cost.comportamiento} onChange={(event) => updateCost(cost.key, "comportamiento", event.target.value as PeriodCostForm["comportamiento"])}>
-                            <option value="fijo">Fijo</option>
-                            <option value="variable">Variable</option>
-                          </select>
-                        </label>
-                        <label>
-                          Driver de asignación
-                          <select value={cost.driver} onChange={(event) => updateCost(cost.key, "driver", event.target.value as DriverKind)}>
-                            {Object.entries(driverLabels).filter(([key]) => key !== "manual").map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-                          </select>
-                        </label>
                       </div>
-                      <p className={`driver-note ${cost.driver === recommendation.driver ? "recommended" : "conventional"}`}>
-                        <b>{cost.driver === recommendation.driver ? "Driver recomendado" : "Alternativa elegida"}:</b> {recommendation.reason}
-                        {cost.driver !== recommendation.driver && " La asignación puede ser convencional y quedará visible en resultados."}
-                      </p>
                     </article>
-                  );
-                })}
+                ))}
               </div>
 
               <button className="secondary add-button" onClick={addCost} type="button">+ Agregar costo o gasto</button>
@@ -699,8 +829,8 @@ export function CostingWizard() {
                   <section className="panel result-status ready">
                     <div>
                       <p className="section-kicker">Resultado conciliado</p>
-                      <h2>{products.length} SKU · {money(result.resultado_empresa)}</h2>
-                      <p>Resultado operativo total. {warningCount > 0 ? `${warningCount} observación metodológica.` : "Sin observaciones pendientes."}</p>
+                      <h2>{products.length} SKU · {money(result.estado_resultados.margen_neto)}</h2>
+                      <p>Margen neto estimado. {warningCount > 0 ? `${warningCount} observación metodológica.` : "Sin observaciones pendientes."}</p>
                     </div>
                     <div className="result-actions">
                       <button className="secondary" onClick={() => setStep("costos")} type="button">Editar datos</button>
@@ -708,10 +838,67 @@ export function CostingWizard() {
                     </div>
                   </section>
 
+                  <section className="panel income-statement-panel">
+                    <div className="section-heading compact-heading">
+                      <div>
+                        <p className="section-kicker">Estado de resultados prototípico</p>
+                        <h3>Rentabilidad del negocio</h3>
+                        <p>Importes del período sin IVA y participación sobre los ingresos por ventas.</p>
+                      </div>
+                    </div>
+                    <div className="income-table-wrapper">
+                      <table className="income-table">
+                        <thead><tr><th>Concepto</th><th>Importe</th><th>% sobre ventas</th></tr></thead>
+                        <tbody>
+                          {([
+                            ["Ingresos por ventas", result.estado_resultados.ingresos_ventas, "total"],
+                            ["Costos directos", result.estado_resultados.costos_directos, "expense"],
+                            ["Margen bruto", result.estado_resultados.margen_bruto, "subtotal"],
+                            ["Gastos operativos", result.estado_resultados.gastos_operativos, "expense"],
+                            ["Gastos administrativos", result.estado_resultados.gastos_administrativos, "expense"],
+                            ["Gastos comerciales", result.estado_resultados.gastos_comerciales, "expense"],
+                            ["Gastos logísticos", result.estado_resultados.gastos_logisticos, "expense"],
+                            ["Margen operativo", result.estado_resultados.margen_operativo, "subtotal"],
+                            ["Impuestos", result.estado_resultados.impuestos, "expense"],
+                            ["Gastos financieros", result.estado_resultados.gastos_financieros, "expense"],
+                            ["Amortizaciones", result.estado_resultados.amortizaciones, "expense"],
+                            ["Margen neto", result.estado_resultados.margen_neto, "total"]
+                          ] as const).map(([label, amount, kind]) => (
+                            <tr className={kind} key={label}>
+                              <th scope="row">{label}{label === "Impuestos" && Number(result.estado_resultados.impuesto_ganancias_estimado) > 0 ? <small>Incluye {money(result.estado_resultados.impuesto_ganancias_estimado)} de Ganancias estimado</small> : null}</th>
+                              <td className={Number(amount) < 0 ? "negative" : ""}>{money(amount)}</td>
+                              <td>{percentageOfSales(amount, result.estado_resultados.ingresos_ventas)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  {result.eficiencia_mod && (
+                    <section className={`panel labor-efficiency ${Number(result.eficiencia_mod.cociente_ocupacion) > 1 ? "over-capacity" : "within-capacity"}`}>
+                      <div className="section-heading compact-heading">
+                        <div>
+                          <p className="section-kicker">Eficiencia de mano de obra</p>
+                          <h3>Ocupación de MOD</h3>
+                          <p>Horas reales requeridas respecto de las horas hombre disponibles teóricas.</p>
+                        </div>
+                        <strong>{new Intl.NumberFormat("es-AR", { style: "percent", maximumFractionDigits: 1 }).format(Number(result.eficiencia_mod.cociente_ocupacion))}</strong>
+                      </div>
+                      <div className="efficiency-track" aria-label="Cociente de horas ocupadas sobre horas disponibles">
+                        <span style={{ width: `${Math.min(Number(result.eficiencia_mod.cociente_ocupacion) * 100, 100)}%` }} />
+                      </div>
+                      <div className="efficiency-values">
+                        <span><b>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Number(result.eficiencia_mod.horas_ocupadas))}</b> horas ocupadas</span>
+                        <span><b>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Number(result.eficiencia_mod.horas_disponibles))}</b> horas disponibles</span>
+                      </div>
+                    </section>
+                  )}
+
                   <section className="panel layers-panel">
                     <div className="section-heading compact-heading"><div><p className="section-kicker">Resultados por capas</p><h3>Qué pudo calcularse</h3></div></div>
                     <div className="layer-grid">
-                      {result.capas_resultado.map((layer) => (
+                      {result.capas_resultado.filter((layer) => layer.codigo !== "costo_productivo_normal").map((layer) => (
                         <article className={layer.estado} key={layer.codigo}>
                           <span>{layer.estado === "calculado" ? "Disponible" : "Pendiente"}</span>
                           <strong>{layerLabels[layer.codigo]}</strong>
@@ -737,28 +924,15 @@ export function CostingWizard() {
                             <article className="accent"><span>Resultado operativo</span><strong>{money(item.resultado_operativo_trazabilidad)}</strong></article>
                           </div>
                           <dl className="breakdown">
-                            <div><dt>Contribución marginal</dt><dd>{money(item.contribucion_marginal)}</dd></div>
-                            <div><dt>Costo productivo normal unitario</dt><dd>{money(item.costo_productivo_normal_unitario)}</dd></div>
-                            <div><dt>Costo completo unitario</dt><dd>{money(item.costo_completo_unitario_gerencial)}</dd></div>
-                            <div><dt>Precio umbral de contribución cero</dt><dd>{money(item.precio_umbral_contribucion_cero)}</dd></div>
+                            <div><dt>Costo directo</dt><dd>{money(item.costo_directo_unitario)}</dd></div>
+                            <div><dt>Indirectos absorbidos</dt><dd>{money(item.costo_indirecto_unitario)}</dd></div>
+                            <div><dt>Costo unitario total</dt><dd>{money(item.costo_completo_unitario_gerencial)}</dd></div>
                             <div><dt>Resultado neto estimado</dt><dd>{money(item.resultado_neto_estimado)}</dd></div>
                           </dl>
                         </section>
                       );
                     })}
                   </div>
-
-                  {result.capacidad && (
-                    <section className="panel capacity-panel">
-                      <div><p className="section-kicker">Capacidad normal</p><h3>Absorción productiva</h3></div>
-                      <dl className="breakdown four">
-                        <div><dt>Horas normales</dt><dd>{result.capacidad.horas_normales}</dd></div>
-                        <div><dt>Horas aplicadas</dt><dd>{result.capacidad.horas_aplicadas}</dd></div>
-                        <div><dt>Tasa fija por hora</dt><dd>{money(result.capacidad.tasa_fija_productiva_normal)}</dd></div>
-                        <div><dt>Variación de capacidad</dt><dd>{money(result.capacidad.variacion_capacidad)}</dd></div>
-                      </dl>
-                    </section>
-                  )}
 
                   <div className={result.conciliacion.conciliado ? "reconcile ok" : "reconcile bad"}>
                     <strong>{result.conciliacion.conciliado ? "Conciliación OK" : "Revisar conciliación"}</strong>
@@ -781,12 +955,15 @@ export function CostingWizard() {
               <div><dt>Importes</dt><dd>Sin IVA</dd></div>
               <div><dt>Productos</dt><dd>{products.length}/5</dd></div>
               <div><dt>Costos</dt><dd>{costs.length}</dd></div>
+              <div><dt>Driver</dt><dd>{driverLabels[configuration.driverIndirectos]}</dd></div>
+              {configuration.tipoActividad !== "reventa" && <div><dt>Horas MOD ocupadas</dt><dd>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(totalOccupiedHours)}</dd></div>}
+              {configuration.tipoActividad !== "reventa" && <div><dt>Horas MOD disponibles</dt><dd>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Number(configuration.horasModDisponibles))}</dd></div>}
             </dl>
           </section>
           <section className="panel guidance-card">
             <p className="section-kicker">Plan de carga</p>
             <ol>
-              <li className={configuration.aceptaTerminos ? "done" : ""}>Configurar negocio</li>
+              <li className={diagnosticCompleted ? "done" : ""}>Configurar negocio</li>
               <li className={step === "costos" || step === "resultados" ? "done" : ""}>Definir productos</li>
               <li className={step === "resultados" ? "done" : ""}>Cargar costos y ventas</li>
               <li className={result !== null ? "done" : ""}>Validar y calcular</li>

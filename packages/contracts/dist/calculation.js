@@ -56,6 +56,7 @@ const itemBaseShape = {
     vendible: z.boolean(),
     inventariable: z.boolean(),
     unidad_base_id: uuid,
+    unidad_descripcion: z.string().trim().min(1).max(40).optional(),
     activo: z.boolean().optional(),
     fuentes_fallback: z.object({
         historico_archivo: decimal.optional(),
@@ -64,7 +65,7 @@ const itemBaseShape = {
     }).strict().optional(),
     receta: z.object({
         cantidad_salida_base: decimal,
-        componentes: z.array(recetaItemSchema).max(100)
+        componentes: z.array(recetaItemSchema).max(20)
     }).strict().optional(),
     mano_obra: z.array(laborSchema).optional(),
     participacion_comprada: decimal.optional()
@@ -96,6 +97,7 @@ export const calculationInputSchema = z.object({
     moneda_base: z.string().length(3).transform((value) => value.toUpperCase()),
     tolerancia_conciliacion: decimal.optional(),
     capacidad_normal_horas: decimal.optional(),
+    horas_mod_disponibles: decimal.optional(),
     items: z.array(itemSchema).min(1).max(100),
     costos: z.array(costoSchema).max(200)
 }).strict();

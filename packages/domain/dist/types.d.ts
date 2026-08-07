@@ -59,6 +59,7 @@ export interface ItemInput {
     vendible: boolean;
     inventariable: boolean;
     unidad_base_id: string;
+    unidad_descripcion?: string;
     activo?: boolean;
     compras?: CompraInput[];
     fuentes_fallback?: FuentesFallbackInput;
@@ -89,6 +90,7 @@ export interface CalculationInput {
     moneda_base: string;
     tolerancia_conciliacion?: DecimalString;
     capacidad_normal_horas?: DecimalString;
+    horas_mod_disponibles?: DecimalString;
     items: ItemInput[];
     costos: CostoInput[];
 }
@@ -137,6 +139,8 @@ export interface ItemResult {
     unidades_vendidas_netas: DecimalString;
     costo_directo: DecimalString;
     costo_indirecto_operativo_asignado: DecimalString;
+    costo_directo_unitario: DecimalString | null;
+    costo_indirecto_unitario: DecimalString | null;
     costo_variable_total: DecimalString;
     costo_fijo_total: DecimalString;
     margen_bruto: DecimalString;
@@ -164,6 +168,11 @@ export interface CapacityResult {
     costo_fijo_absorbido: DecimalString;
     variacion_capacidad: DecimalString;
 }
+export interface LaborEfficiencyResult {
+    horas_disponibles: DecimalString;
+    horas_ocupadas: DecimalString;
+    cociente_ocupacion: DecimalString;
+}
 export interface ReconciliationResult {
     costos_cargados: DecimalString;
     costos_asignados: DecimalString;
@@ -173,6 +182,21 @@ export interface ReconciliationResult {
     diferencia_vistas: DecimalString;
     tolerancia: DecimalString;
     conciliado: boolean;
+}
+export interface IncomeStatementResult {
+    ingresos_ventas: DecimalString;
+    costos_directos: DecimalString;
+    margen_bruto: DecimalString;
+    gastos_operativos: DecimalString;
+    gastos_administrativos: DecimalString;
+    gastos_comerciales: DecimalString;
+    gastos_logisticos: DecimalString;
+    margen_operativo: DecimalString;
+    impuestos: DecimalString;
+    impuesto_ganancias_estimado: DecimalString;
+    gastos_financieros: DecimalString;
+    amortizaciones: DecimalString;
+    margen_neto: DecimalString;
 }
 export interface CalculationSuccess {
     ok: true;
@@ -184,10 +208,12 @@ export interface CalculationSuccess {
     costos_item: ItemCostResult[];
     asignaciones: AllocationResult[];
     resultados_item: ItemResult[];
+    estado_resultados: IncomeStatementResult;
     resultado_empresa: DecimalString;
     resultado_neto_empresa_estimado: DecimalString | null;
     capas_resultado: ResultLayerStatus[];
     capacidad: CapacityResult | null;
+    eficiencia_mod: LaborEfficiencyResult | null;
     conciliacion: ReconciliationResult;
     validaciones: ValidationIssue[];
 }
