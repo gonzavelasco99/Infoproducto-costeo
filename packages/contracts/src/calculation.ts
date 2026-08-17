@@ -16,7 +16,10 @@ const configurationSchema = z.object({
   condicion_fiscal: z.enum(["responsable_inscripto", "monotributista", "exento"]),
   canal_default: z.literal("venta_general"),
   importes_sin_iva: z.literal(true),
-  alicuota_impuesto_resultado: decimal.optional()
+  alicuota_impuesto_resultado: decimal.optional(),
+  total_salarios_operarios_periodo: decimal.optional(),
+  cantidad_operarios: decimal.optional(),
+  horas_contratadas_operario_promedio: decimal.optional()
 }).strict();
 
 const compraSchema = z.object({

@@ -4,7 +4,7 @@ import swaggerUi from "@fastify/swagger-ui";
 import Fastify from "fastify";
 import { ZodError } from "zod";
 import { parseCalculationInput } from "@costeo/contracts";
-import { calculate, sha256Canonical } from "@costeo/domain";
+import { calculate, ENGINE_VERSION, sha256Canonical } from "@costeo/domain";
 
 export async function buildApp() {
   const app = Fastify({
@@ -44,7 +44,7 @@ export async function buildApp() {
         }
       }
     }
-  }, async () => ({ status: "ok", engine_version: "0.2.0" }));
+  }, async () => ({ status: "ok", engine_version: ENGINE_VERSION }));
 
   app.post("/v1/calculations/free", {
     schema: {

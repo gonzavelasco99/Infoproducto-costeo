@@ -193,6 +193,28 @@ export function validateCalculationInput(input: CalculationInput): ValidationIss
   if (input.configuracion.alicuota_impuesto_resultado !== undefined) {
     validateDecimal(input.configuracion.alicuota_impuesto_resultado, "/configuracion/alicuota_impuesto_resultado", issues, { rate: true });
   }
+  const laborConfiguration = [
+    input.configuracion.total_salarios_operarios_periodo,
+    input.configuracion.cantidad_operarios,
+    input.configuracion.horas_contratadas_operario_promedio
+  ];
+  if (laborConfiguration.some((value) => value !== undefined)) {
+    if (laborConfiguration.some((value) => value === undefined)) {
+      issues.push(issue(
+        "VAL-MOD-003",
+        "Para calcular la MOD deben informarse el total de salarios, la cantidad de operarios y sus horas contratadas promedio.",
+        "/configuracion",
+        undefined,
+        { remediacion: "Completá los tres datos de mano de obra en la configuración del negocio." }
+      ));
+    }
+    validateDecimal(input.configuracion.total_salarios_operarios_periodo, "/configuracion/total_salarios_operarios_periodo", issues, { positive: true });
+    validateDecimal(input.configuracion.cantidad_operarios, "/configuracion/cantidad_operarios", issues, { positive: true });
+    validateDecimal(input.configuracion.horas_contratadas_operario_promedio, "/configuracion/horas_contratadas_operario_promedio", issues, { positive: true });
+    if (isValidDecimal(input.configuracion.cantidad_operarios) && !D(input.configuracion.cantidad_operarios).isInteger()) {
+      issues.push(issue("VAL-DAT-002", "La cantidad de operarios debe ser un número entero.", "/configuracion/cantidad_operarios"));
+    }
+  }
   if (input.capacidad_normal_horas !== undefined) {
     validateDecimal(input.capacidad_normal_horas, "/capacidad_normal_horas", issues, { positive: true });
   }
@@ -215,6 +237,62 @@ export function validateCalculationInput(input: CalculationInput): ValidationIss
   }
   input.items.forEach((item, index) => validateItem(item, index, itemsById, issues));
   validateGraph(itemsById, issues);
+
+  const canCalculateOccupiedHours = input.items.every((item) => {
+    if (!item.vendible || item.activo === false || item.origen_item === "comprado") return true;
+    return isValidDecimal(item.venta?.cantidad_base)
+      && (item.mano_obra ?? []).every((labor) => isValidDecimal(labor.horas_estandar))
+      && (item.participacion_comprada === undefined || isValidDecimal(item.participacion_comprada));
+  });
+  if (canCalculateOccupiedHours) {
+    const occupiedHours = input.items.reduce((total, item) => {
+      if (!item.vendible || item.activo === false || item.origen_item === "comprado") return total;
+      const manufacturedShare = item.origen_item === "mixto"
+        ? D(1).minus(D(item.participacion_comprada ?? "0.5"))
+        : D(1);
+      const standardHours = (item.mano_obra ?? []).reduce((hours, labor) => hours.plus(D(labor.horas_estandar)), D(0));
+      return total.plus(D(item.venta?.cantidad_base ?? 0).times(manufacturedShare).times(standardHours));
+    }, D(0));
+    const configuredAvailableHours = isValidDecimal(input.configuracion.cantidad_operarios)
+      && isValidDecimal(input.configuracion.horas_contratadas_operario_promedio)
+      ? D(input.configuracion.cantidad_operarios).times(D(input.configuracion.horas_contratadas_operario_promedio))
+      : isValidDecimal(input.horas_mod_disponibles)
+        ? D(input.horas_mod_disponibles)
+        : undefined;
+
+    if (isValidDecimal(input.configuracion.total_salarios_operarios_periodo) && occupiedHours.lte(0)) {
+      issues.push(issue(
+        "VAL-MOD-002",
+        "No hay horas ocupadas para distribuir el total de salarios de operarios.",
+        "/items",
+        { horas_ocupadas: occupiedHours.toString() },
+        {
+          fase: "pre_calculo",
+          alcance: "cálculo de MOD y resultados",
+          remediacion: "Informá unidades fabricadas y una producción por hora hombre mayor que cero.",
+          formula_ids: ["MOD-001"]
+        }
+      ));
+    }
+    if (configuredAvailableHours !== undefined && occupiedHours.gt(configuredAvailableHours)) {
+      issues.push(issue(
+        "VAL-MOD-001",
+        "Las horas ocupadas totales superan las horas disponibles del período.",
+        "/configuracion/cantidad_operarios",
+        {
+          horas_ocupadas: occupiedHours.toString(),
+          horas_disponibles: configuredAvailableHours.toString(),
+          exceso_horas: occupiedHours.minus(configuredAvailableHours).toString()
+        },
+        {
+          fase: "pre_calculo",
+          alcance: "cálculo completo",
+          remediacion: "Revisá las unidades fabricadas, la producción por hora hombre o la capacidad contratada de los operarios.",
+          formula_ids: ["MOD-001", "MOD-002"]
+        }
+      ));
+    }
+  }
 
   const costIds = new Set<string>();
   input.costos.forEach((cost, index) => {

@@ -244,6 +244,90 @@ describe("motor determinista de costeo beta", () => {
     });
   });
 
+  it("absorbe el total salarial entre los SKU según sus horas productivas", () => {
+    const raw = purchasedItem();
+    const firstProduct = {
+      item_id: ids.finished,
+      codigo: "PT-MOD-A",
+      nombre: "Producto MOD A",
+      tipo_item: "producto_final" as const,
+      origen_item: "fabricado" as const,
+      vendible: true,
+      inventariable: true,
+      unidad_base_id: ids.unit,
+      receta: {
+        cantidad_salida_base: "1",
+        componentes: [{ item_componente_id: ids.raw, cantidad_neta: "1", merma_estandar: "0" }]
+      },
+      mano_obra: [{ rol_id: ids.labor, horas_estandar: "0.1", costo_hora_completo: "0", comportamiento: "variable" as const }],
+      venta: { cantidad_base: "100", precio_neto_unitario: "500" }
+    };
+    const secondProduct = {
+      ...firstProduct,
+      item_id: ids.mixed,
+      codigo: "PT-MOD-B",
+      nombre: "Producto MOD B",
+      mano_obra: [{ rol_id: ids.labor, horas_estandar: "0.2", costo_hora_completo: "0", comportamiento: "variable" as const }],
+      venta: { cantidad_base: "50", precio_neto_unitario: "500" }
+    };
+    const input = baseInput([raw, firstProduct, secondProduct]);
+    input.configuracion.total_salarios_operarios_periodo = "2000";
+    input.configuracion.cantidad_operarios = "1";
+    input.configuracion.horas_contratadas_operario_promedio = "100";
+
+    const result = calculate(input);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.eficiencia_mod).toEqual({
+      horas_disponibles: "100",
+      horas_ocupadas: "20",
+      cociente_ocupacion: "0.2"
+    });
+    const firstResult = result.resultados_item.find((item) => item.codigo === "PT-MOD-A");
+    const secondResult = result.resultados_item.find((item) => item.codigo === "PT-MOD-B");
+    expect(firstResult).toMatchObject({ costo_mod_unitario: "10", costo_directo_unitario: "110" });
+    expect(secondResult).toMatchObject({ costo_mod_unitario: "20", costo_directo_unitario: "120" });
+    const absorbedLabor = Number(firstResult?.costo_mod_unitario) * 100
+      + Number(secondResult?.costo_mod_unitario) * 50;
+    expect(absorbedLabor).toBe(2000);
+  });
+
+  it("bloquea el cálculo cuando las horas ocupadas superan la capacidad contratada", () => {
+    const raw = purchasedItem();
+    const finished = {
+      item_id: ids.finished,
+      codigo: "PT-SOBRECARGA",
+      nombre: "Producto sin capacidad suficiente",
+      tipo_item: "producto_final" as const,
+      origen_item: "fabricado" as const,
+      vendible: true,
+      inventariable: true,
+      unidad_base_id: ids.unit,
+      receta: {
+        cantidad_salida_base: "1",
+        componentes: [{ item_componente_id: ids.raw, cantidad_neta: "1", merma_estandar: "0" }]
+      },
+      mano_obra: [{ rol_id: ids.labor, horas_estandar: "2", costo_hora_completo: "0", comportamiento: "variable" as const }],
+      venta: { cantidad_base: "10", precio_neto_unitario: "500" }
+    };
+    const input = baseInput([raw, finished]);
+    input.configuracion.total_salarios_operarios_periodo = "1000";
+    input.configuracion.cantidad_operarios = "1";
+    input.configuracion.horas_contratadas_operario_promedio = "10";
+
+    const result = calculate(input);
+    expect(result.ok).toBe(false);
+    expect(result.validaciones).toContainEqual(expect.objectContaining({
+      codigo: "VAL-MOD-001",
+      severidad: "error_bloqueante",
+      detalle: {
+        horas_ocupadas: "20",
+        horas_disponibles: "10",
+        exceso_horas: "10"
+      }
+    }));
+  });
+
   it("bloquea un SKU de reventa cuando la sesión fue configurada como fabricación", () => {
     const resale = purchasedItem({
       item_id: ids.resale,

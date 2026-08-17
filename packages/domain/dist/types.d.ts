@@ -11,6 +11,9 @@ export interface BusinessConfigurationInput {
     canal_default: "venta_general";
     importes_sin_iva: true;
     alicuota_impuesto_resultado?: DecimalString;
+    total_salarios_operarios_periodo?: DecimalString;
+    cantidad_operarios?: DecimalString;
+    horas_contratadas_operario_promedio?: DecimalString;
 }
 export type TipoItem = "materia_prima" | "insumo" | "mercaderia_reventa" | "producto_intermedio" | "producto_final" | "envase_embalaje" | "consumible" | "subproducto_recupero";
 export type OrigenItem = "comprado" | "fabricado" | "mixto" | "generado_subproducto";
@@ -139,6 +142,7 @@ export interface ItemResult {
     unidades_vendidas_netas: DecimalString;
     costo_directo: DecimalString;
     costo_indirecto_operativo_asignado: DecimalString;
+    costo_mod_unitario: DecimalString | null;
     costo_directo_unitario: DecimalString | null;
     costo_indirecto_unitario: DecimalString | null;
     costo_variable_total: DecimalString;
@@ -200,7 +204,7 @@ export interface IncomeStatementResult {
 }
 export interface CalculationSuccess {
     ok: true;
-    engine_version: "0.2.0";
+    engine_version: "0.3.0";
     schema_version: "2026-07-31.beta2";
     calculation_id: string;
     moneda_base: string;
@@ -219,7 +223,7 @@ export interface CalculationSuccess {
 }
 export interface CalculationFailure {
     ok: false;
-    engine_version: "0.2.0";
+    engine_version: "0.3.0";
     schema_version: "2026-07-31.beta2";
     calculation_id: string;
     validaciones: ValidationIssue[];

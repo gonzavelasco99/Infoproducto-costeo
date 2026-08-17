@@ -21,7 +21,8 @@ interface ConfigurationForm {
   condicionFiscal: BusinessConfigurationInput["condicion_fiscal"];
   alicuotaImpuestoResultado: string;
   salarioModPeriodo: string;
-  horasModDisponibles: string;
+  cantidadOperarios: string;
+  horasContratadasOperarioPromedio: string;
   driverIndirectos: Exclude<DriverKind, "manual">;
   aceptaTerminos: boolean;
 }
@@ -60,7 +61,8 @@ const initialConfiguration: ConfigurationForm = {
   condicionFiscal: "responsable_inscripto",
   alicuotaImpuestoResultado: "",
   salarioModPeriodo: "240000",
-  horasModDisponibles: "160",
+  cantidadOperarios: "2",
+  horasContratadasOperarioPromedio: "160",
   driverIndirectos: "horas_mod",
   aceptaTerminos: false
 };
@@ -242,10 +244,13 @@ export function CostingWizard() {
     return total + (periodQuantity * manufacturedShare) / outputPerHour;
   }, 0), [products]);
 
-  const availableLaborHours = Number(configuration.horasModDisponibles);
-  const laborCostPerHour = availableLaborHours > 0
-    ? Number(configuration.salarioModPeriodo) / availableLaborHours
+  const availableLaborHours = Number(configuration.cantidadOperarios) * Number(configuration.horasContratadasOperarioPromedio);
+  const laborCostPerHour = totalOccupiedHours > 0
+    ? Number(configuration.salarioModPeriodo) / totalOccupiedHours
     : 0;
+  const capacityExceeded = Number.isFinite(availableLaborHours)
+    && availableLaborHours >= 0
+    && totalOccupiedHours > availableLaborHours;
 
   const input = useMemo<CalculationInput>(() => {
     const items: ItemInput[] = [];
@@ -327,6 +332,11 @@ export function CostingWizard() {
         condicion_fiscal: configuration.condicionFiscal,
         canal_default: "venta_general",
         importes_sin_iva: true,
+        ...(configuration.tipoActividad === "reventa" ? {} : {
+          total_salarios_operarios_periodo: configuration.salarioModPeriodo,
+          cantidad_operarios: configuration.cantidadOperarios,
+          horas_contratadas_operario_promedio: configuration.horasContratadasOperarioPromedio
+        }),
         ...(configuration.condicionFiscal !== "responsable_inscripto" || configuration.alicuotaImpuestoResultado.trim() === ""
           ? {}
           : { alicuota_impuesto_resultado: configuration.alicuotaImpuestoResultado })
@@ -334,7 +344,7 @@ export function CostingWizard() {
       moneda_base: "ARS",
       ...(configuration.tipoActividad === "reventa"
         ? {}
-        : { horas_mod_disponibles: configuration.horasModDisponibles }),
+        : { horas_mod_disponibles: normalizedDecimal(availableLaborHours) }),
       items,
       costos: costs.map((cost) => ({
         costo_id: idFor(6000 + cost.key),
@@ -502,6 +512,9 @@ export function CostingWizard() {
     const importedAvailableHours = imported.horas_mod_disponibles
       ?? imported.capacidad_normal_horas
       ?? (importedOccupiedHours > 0 ? normalizedDecimal(importedOccupiedHours) : "160");
+    const importedOperatorCount = imported.configuracion.cantidad_operarios ?? "1";
+    const importedAverageContractedHours = imported.configuracion.horas_contratadas_operario_promedio
+      ?? normalizedDecimal(Number(importedAvailableHours) / Number(importedOperatorCount));
     const requestedDriver = imported.costos.find((cost) => cost.trazabilidad === "indirecto")?.driver?.tipo;
     setConfiguration({
       tipoActividad: imported.configuracion.tipo_actividad,
@@ -509,8 +522,10 @@ export function CostingWizard() {
       alicuotaImpuestoResultado: imported.configuracion.condicion_fiscal === "responsable_inscripto"
         ? imported.configuracion.alicuota_impuesto_resultado ?? ""
         : "",
-      salarioModPeriodo: normalizedDecimal(Number(importedHourlyCost) * Number(importedAvailableHours)),
-      horasModDisponibles: importedAvailableHours,
+      salarioModPeriodo: imported.configuracion.total_salarios_operarios_periodo
+        ?? normalizedDecimal(Number(importedHourlyCost) * importedOccupiedHours),
+      cantidadOperarios: importedOperatorCount,
+      horasContratadasOperarioPromedio: importedAverageContractedHours,
       driverIndirectos: requestedDriver === undefined || requestedDriver === "manual" ? "uniforme" : requestedDriver,
       aceptaTerminos: true
     });
@@ -620,16 +635,23 @@ export function CostingWizard() {
                 </label>
                 {configuration.tipoActividad !== "reventa" && (
                   <label>
-                    Salario de MOD del período <em>promedio o aproximado</em>
+                    Total de salarios de operarios para el período <em>estimado o aproximado</em>
                     <input inputMode="decimal" value={configuration.salarioModPeriodo} onChange={(event) => updateConfiguration("salarioModPeriodo", event.target.value)} />
-                    <small>Total de salarios de operarios para el mismo período de análisis.</small>
+                    <small>Sumá los salarios estimados de todos los operarios para el mismo período de análisis.</small>
                   </label>
                 )}
                 {configuration.tipoActividad !== "reventa" && (
                   <label>
-                    Horas hombre disponibles de MOD en el período
-                    <input inputMode="decimal" value={configuration.horasModDisponibles} onChange={(event) => updateConfiguration("horasModDisponibles", event.target.value)} />
-                    <small>Capacidad teórica disponible de los operarios durante el período.</small>
+                    Cantidad de operarios
+                    <input inputMode="numeric" value={configuration.cantidadOperarios} onChange={(event) => updateConfiguration("cantidadOperarios", event.target.value)} />
+                    <small>Número de operarios afectados a la producción durante el período.</small>
+                  </label>
+                )}
+                {configuration.tipoActividad !== "reventa" && (
+                  <label>
+                    Horas contratadas de operario en el período <em>promedio</em>
+                    <input inputMode="decimal" value={configuration.horasContratadasOperarioPromedio} onChange={(event) => updateConfiguration("horasContratadasOperarioPromedio", event.target.value)} />
+                    <small>Promedio de horas contratadas por cada operario. La capacidad disponible es operarios × horas promedio.</small>
                   </label>
                 )}
                 <label>
@@ -681,6 +703,8 @@ export function CostingWizard() {
                 {products.map((product, index) => {
                   const showManufacturing = product.origen !== "comprado";
                   const showPurchase = product.origen !== "fabricado";
+                  const productionPerLaborHour = Number(product.produccionPorHoraHombre);
+                  const laborUnitCost = productionPerLaborHour > 0 ? laborCostPerHour / productionPerLaborHour : 0;
                   return (
                     <article className="editor-card" key={product.key}>
                       <div className="editor-card-header">
@@ -739,11 +763,11 @@ export function CostingWizard() {
                           <div className="labor-section">
                             <div>
                               <strong>Mano de obra directa (MOD)</strong>
-                              <span>Las horas ocupadas se calculan como unidades fabricadas ÷ producción por hora hombre. El costo horario proviene del salario ÷ horas disponibles.</span>
+                              <span>La MOD se distribuye según las horas productivas de cada SKU sobre el total. Así, el conjunto de productos absorbe el total de salarios del período.</span>
                             </div>
                             <div className="form-grid">
                               <label>Producción por hora hombre<input inputMode="decimal" value={product.produccionPorHoraHombre} onChange={(event) => updateProduct(product.key, "produccionPorHoraHombre", event.target.value)} /></label>
-                              <label>Costo horario de MOD <em>calculado</em><input disabled value={money(normalizedDecimal(laborCostPerHour))} /></label>
+                              <label>Costo unitario de MOD <em>calculado</em><input disabled value={money(normalizedDecimal(laborUnitCost))} /></label>
                             </div>
                           </div>
                         </div>
@@ -754,9 +778,15 @@ export function CostingWizard() {
               </div>
 
               <button className="secondary add-button" disabled={products.length >= 5} onClick={addProduct} type="button">+ Agregar otro SKU</button>
+              {capacityExceeded && (
+                <aside className="capacity-alert" role="alert">
+                  <strong>Capacidad de MOD excedida</strong>
+                  <p>La producción requiere {new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(totalOccupiedHours)} horas, pero informaste {new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(availableLaborHours)} horas disponibles. Revisá las unidades fabricadas, la producción por hora hombre o la capacidad contratada antes de continuar.</p>
+                </aside>
+              )}
               <div className="flow-actions">
                 <button className="secondary" onClick={() => setStep("diagnostico")} type="button">Volver</button>
-                <button onClick={() => setStep("costos")} type="button">Continuar con costos</button>
+                <button disabled={capacityExceeded} onClick={() => setStep("costos")} type="button">Continuar con costos</button>
               </div>
             </section>
           )}
@@ -891,6 +921,8 @@ export function CostingWizard() {
                       <div className="efficiency-values">
                         <span><b>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Number(result.eficiencia_mod.horas_ocupadas))}</b> horas ocupadas</span>
                         <span><b>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Number(result.eficiencia_mod.horas_disponibles))}</b> horas disponibles</span>
+                        <span><b>{money(configuration.salarioModPeriodo)}</b> salarios informados</span>
+                        <span><b>{money(normalizedDecimal(result.resultados_item.reduce((total, item) => total + Number(item.costo_mod_unitario ?? 0) * Number(item.unidades_vendidas_netas), 0)))}</b> MOD absorbida</span>
                       </div>
                     </section>
                   )}
@@ -924,8 +956,9 @@ export function CostingWizard() {
                             <article className="accent"><span>Resultado operativo</span><strong>{money(item.resultado_operativo_trazabilidad)}</strong></article>
                           </div>
                           <dl className="breakdown">
-                            <div><dt>Costo directo</dt><dd>{money(item.costo_directo_unitario)}</dd></div>
-                            <div><dt>Indirectos absorbidos</dt><dd>{money(item.costo_indirecto_unitario)}</dd></div>
+                            <div><dt>Costo unitario de MOD</dt><dd>{money(item.costo_mod_unitario)}</dd></div>
+                            <div><dt>Costo directo unitario</dt><dd>{money(item.costo_directo_unitario)}</dd></div>
+                            <div><dt>Indirectos absorbidos unitarios</dt><dd>{money(item.costo_indirecto_unitario)}</dd></div>
                             <div><dt>Costo unitario total</dt><dd>{money(item.costo_completo_unitario_gerencial)}</dd></div>
                             <div><dt>Resultado neto estimado</dt><dd>{money(item.resultado_neto_estimado)}</dd></div>
                           </dl>
@@ -957,7 +990,8 @@ export function CostingWizard() {
               <div><dt>Costos</dt><dd>{costs.length}</dd></div>
               <div><dt>Driver</dt><dd>{driverLabels[configuration.driverIndirectos]}</dd></div>
               {configuration.tipoActividad !== "reventa" && <div><dt>Horas MOD ocupadas</dt><dd>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(totalOccupiedHours)}</dd></div>}
-              {configuration.tipoActividad !== "reventa" && <div><dt>Horas MOD disponibles</dt><dd>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(Number(configuration.horasModDisponibles))}</dd></div>}
+              {configuration.tipoActividad !== "reventa" && <div><dt>Operarios</dt><dd>{configuration.cantidadOperarios}</dd></div>}
+              {configuration.tipoActividad !== "reventa" && <div><dt>Horas MOD disponibles</dt><dd>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(availableLaborHours)}</dd></div>}
             </dl>
           </section>
           <section className="panel guidance-card">

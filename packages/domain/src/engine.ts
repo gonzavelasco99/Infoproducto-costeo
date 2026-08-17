@@ -16,13 +16,14 @@ import type {
   ValidationIssue
 } from "./types.js";
 
-export const ENGINE_VERSION = "0.2.0" as const;
+export const ENGINE_VERSION = "0.3.0" as const;
 export const SCHEMA_VERSION = "2026-07-31.beta2" as const;
 
 interface InternalUnitCost {
   total: Decimal;
   variable: Decimal;
   fixed: Decimal;
+  labor: Decimal;
   source: ItemCostResult["fuente_costo"];
   components: MaterialComponentResult[];
 }
@@ -36,6 +37,7 @@ interface InternalItemResult {
   variable: Decimal;
   fixed: Decimal;
   laborHours: Decimal;
+  laborUnit: Decimal;
   indirectByCategory: Map<string, Decimal>;
 }
 
@@ -56,7 +58,7 @@ function purchasedCost(item: ItemInput): InternalUnitCost | undefined {
       total = total.plus(economicUnit.plus(acquisitionUnit).times(q));
     }
     const unit = total.div(quantity);
-    return { total: unit, variable: unit, fixed: ZERO, source: "promedio_compras", components: [] };
+    return { total: unit, variable: unit, fixed: ZERO, labor: ZERO, source: "promedio_compras", components: [] };
   }
   const candidates: Array<[ItemCostResult["fuente_costo"], string | undefined]> = [
     ["historico_archivo", item.fuentes_fallback?.historico_archivo],
@@ -66,7 +68,7 @@ function purchasedCost(item: ItemInput): InternalUnitCost | undefined {
   const selected = candidates.find(([, value]) => value !== undefined);
   if (!selected || selected[1] === undefined) return undefined;
   const unit = D(selected[1]);
-  return { total: unit, variable: unit, fixed: ZERO, source: selected[0], components: [] };
+  return { total: unit, variable: unit, fixed: ZERO, labor: ZERO, source: selected[0], components: [] };
 }
 
 function topologicalOrder(items: ItemInput[]): string[] {
@@ -84,7 +86,33 @@ function topologicalOrder(items: ItemInput[]): string[] {
   return order;
 }
 
-function buildUnitCosts(items: ItemInput[], order: string[]): { costs: Map<string, InternalUnitCost>; issues: ValidationIssue[] } {
+function occupiedLaborHours(items: ItemInput[]): Decimal {
+  return sum(items
+    .filter((item) => item.vendible && item.activo !== false && item.origen_item !== "comprado")
+    .map((item) => {
+      const units = D(item.venta?.cantidad_base ?? 0);
+      const manufacturedShare = item.origen_item === "mixto"
+        ? ONE.minus(D(item.participacion_comprada ?? "0.5"))
+        : ONE;
+      const standardHours = sum((item.mano_obra ?? []).map((labor) => D(labor.horas_estandar)));
+      return units.times(manufacturedShare).times(standardHours);
+    }));
+}
+
+function availableLaborHours(input: CalculationInput): Decimal | undefined {
+  const operatorCount = input.configuracion.cantidad_operarios;
+  const averageContractedHours = input.configuracion.horas_contratadas_operario_promedio;
+  if (operatorCount !== undefined && averageContractedHours !== undefined) {
+    return D(operatorCount).times(D(averageContractedHours));
+  }
+  return input.horas_mod_disponibles === undefined ? undefined : D(input.horas_mod_disponibles);
+}
+
+function buildUnitCosts(
+  items: ItemInput[],
+  order: string[],
+  laborHourlyRate?: Decimal
+): { costs: Map<string, InternalUnitCost>; issues: ValidationIssue[] } {
   const byId = new Map(items.map((item) => [item.item_id, item]));
   const costs = new Map<string, InternalUnitCost>();
   const issues: ValidationIssue[] = [];
@@ -98,6 +126,7 @@ function buildUnitCosts(items: ItemInput[], order: string[]): { costs: Map<strin
       const outputQuantity = D(item.receta.cantidad_salida_base);
       let variable = ZERO;
       let fixed = ZERO;
+      let laborTotal = ZERO;
       const components: MaterialComponentResult[] = [];
       for (const component of item.receta.componentes) {
         const componentCost = costs.get(component.item_componente_id);
@@ -127,11 +156,12 @@ function buildUnitCosts(items: ItemInput[], order: string[]): { costs: Map<strin
         });
       }
       for (const labor of item.mano_obra ?? []) {
-        const laborCost = D(labor.horas_estandar).times(D(labor.costo_hora_completo));
+        const laborCost = D(labor.horas_estandar).times(laborHourlyRate ?? D(labor.costo_hora_completo));
+        laborTotal = laborTotal.plus(laborCost);
         if (labor.comportamiento === "variable") variable = variable.plus(laborCost);
         else fixed = fixed.plus(laborCost);
       }
-      fabricated = { total: variable.plus(fixed), variable, fixed, source: "fabricado", components };
+      fabricated = { total: variable.plus(fixed), variable, fixed, labor: laborTotal, source: "fabricado", components };
     }
 
     if (item.origen_item === "comprado" && bought) costs.set(itemId, bought);
@@ -143,6 +173,7 @@ function buildUnitCosts(items: ItemInput[], order: string[]): { costs: Map<strin
         total: bought.total.times(purchasedShare).plus(fabricated.total.times(manufacturedShare)),
         variable: bought.variable.times(purchasedShare).plus(fabricated.variable.times(manufacturedShare)),
         fixed: bought.fixed.times(purchasedShare).plus(fabricated.fixed.times(manufacturedShare)),
+        labor: bought.labor.times(purchasedShare).plus(fabricated.labor.times(manufacturedShare)),
         source: "mixto",
         components: fabricated.components
       });
@@ -307,6 +338,7 @@ function presentItemResult(
     unidades_vendidas_netas: decimalString(entry.units),
     costo_directo: decimalString(entry.direct),
     costo_indirecto_operativo_asignado: decimalString(entry.indirect),
+    costo_mod_unitario: entry.units.gt(0) ? decimalString(entry.laborUnit) : null,
     costo_directo_unitario: entry.units.gt(0) ? decimalString(entry.direct.div(entry.units)) : null,
     costo_indirecto_unitario: entry.units.gt(0) ? decimalString(entry.indirect.div(entry.units)) : null,
     costo_variable_total: decimalString(entry.variable),
@@ -339,7 +371,13 @@ export function calculate(input: CalculationInput): CalculationOutcome {
   }
 
   const order = topologicalOrder(input.items);
-  const { costs: unitCosts, issues: costingIssues } = buildUnitCosts(input.items, order);
+  const appliedHours = occupiedLaborHours(input.items);
+  const laborCapacity = availableLaborHours(input);
+  const totalLaborSalaries = input.configuracion.total_salarios_operarios_periodo;
+  const laborHourlyRate = totalLaborSalaries === undefined
+    ? undefined
+    : D(totalLaborSalaries).div(appliedHours);
+  const { costs: unitCosts, issues: costingIssues } = buildUnitCosts(input.items, order, laborHourlyRate);
   validationIssues.push(...costingIssues);
   if (costingIssues.some((entry) => entry.severidad === "error_bloqueante")) {
     return {
@@ -354,7 +392,7 @@ export function calculate(input: CalculationInput): CalculationOutcome {
   const itemResults = new Map<string, InternalItemResult>();
   for (const item of input.items) {
     const sale = saleTotals(item);
-    const unit = unitCosts.get(item.item_id) ?? { total: ZERO, variable: ZERO, fixed: ZERO };
+    const unit = unitCosts.get(item.item_id) ?? { total: ZERO, variable: ZERO, fixed: ZERO, labor: ZERO };
     const manufacturedShare = item.origen_item === "mixto"
       ? ONE.minus(D(item.participacion_comprada ?? "0.5"))
       : ONE;
@@ -367,6 +405,7 @@ export function calculate(input: CalculationInput): CalculationOutcome {
       variable: unit.variable.times(sale.units),
       fixed: unit.fixed.times(sale.units),
       laborHours: sum((item.mano_obra ?? []).map((labor) => D(labor.horas_estandar))).times(sale.units).times(manufacturedShare),
+      laborUnit: unit.labor,
       indirectByCategory: new Map<string, Decimal>()
     });
   }
@@ -410,7 +449,6 @@ export function calculate(input: CalculationInput): CalculationOutcome {
     .map((cost) => D(cost.monto_neto_total)));
   const normalHours = input.capacidad_normal_horas === undefined ? undefined : D(input.capacidad_normal_horas);
   const productiveRate = normalHours === undefined ? undefined : productiveFixed.div(normalHours);
-  const appliedHours = sum([...itemResults.values()].filter((entry) => entry.item.vendible).map((entry) => entry.laborHours));
   const capacity: CapacityResult | null = normalHours === undefined || productiveRate === undefined
     ? null
     : {
@@ -540,12 +578,12 @@ export function calculate(input: CalculationInput): CalculationOutcome {
     resultado_neto_empresa_estimado: netCompany,
     capas_resultado: resultLayers,
     capacidad: capacity,
-    eficiencia_mod: input.horas_mod_disponibles === undefined
+    eficiencia_mod: laborCapacity === undefined
       ? null
       : {
-          horas_disponibles: decimalString(D(input.horas_mod_disponibles)),
+          horas_disponibles: decimalString(laborCapacity),
           horas_ocupadas: decimalString(appliedHours),
-          cociente_ocupacion: decimalString(appliedHours.div(D(input.horas_mod_disponibles)))
+          cociente_ocupacion: decimalString(appliedHours.div(laborCapacity))
         },
     conciliacion: {
       costos_cargados: decimalString(totalCostsLoaded),

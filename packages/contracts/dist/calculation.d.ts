@@ -27,6 +27,9 @@ export declare const calculationInputSchema: z.ZodObject<{
         canal_default: z.ZodLiteral<"venta_general">;
         importes_sin_iva: z.ZodLiteral<true>;
         alicuota_impuesto_resultado: z.ZodOptional<z.ZodString>;
+        total_salarios_operarios_periodo: z.ZodOptional<z.ZodString>;
+        cantidad_operarios: z.ZodOptional<z.ZodString>;
+        horas_contratadas_operario_promedio: z.ZodOptional<z.ZodString>;
     }, z.core.$strict>;
     moneda_base: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
     tolerancia_conciliacion: z.ZodOptional<z.ZodString>;
