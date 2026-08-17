@@ -14,7 +14,7 @@ export default function HomePage() {
         </div>
         <aside className="hero-note">
           <strong>Importes sin IVA</strong>
-          Costos, gastos y precios se cargan netos. El cálculo se ejecuta localmente y la continuidad queda en tu archivo.
+          Costos, gastos y precios se cargan netos. La API procesa el cálculo sin persistir la sesión; el motor local queda como respaldo y la continuidad, en tu archivo.
         </aside>
       </header>
       <CostingWizard />
