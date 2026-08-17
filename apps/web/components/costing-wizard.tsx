@@ -10,6 +10,7 @@ import type {
   OrigenItem,
   ValidationIssue
 } from "@costeo/domain";
+import { calculateViaApi } from "../app/calculation-api";
 import { createNativeFile, readNativeFile } from "../app/native-file";
 
 const UNIT_ID = "00000000-0000-4000-8000-000000000001";
@@ -215,6 +216,7 @@ export function CostingWizard() {
   const [costs, setCosts] = useState<PeriodCostForm[]>(initialCosts);
   const [result, setResult] = useState<CalculationOutcome | null>(null);
   const [working, setWorking] = useState(false);
+  const [calculationSource, setCalculationSource] = useState<"api" | "local" | null>(null);
   const [fileMessage, setFileMessage] = useState<string | null>(null);
   const workerRef = useRef<Worker | null>(null);
   const nextProductKey = useRef(2);
@@ -224,6 +226,7 @@ export function CostingWizard() {
     const worker = new Worker(new URL("../app/calculation.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (event: MessageEvent<CalculationOutcome>) => {
       setResult(event.data);
+      setCalculationSource("local");
       setWorking(false);
       setStep("resultados");
     };
@@ -457,11 +460,28 @@ export function CostingWizard() {
     setResult(null);
   };
 
-  const calculateNow = () => {
+  const calculateNow = async () => {
     setWorking(true);
     setResult(null);
+    setCalculationSource(null);
     setFileMessage(null);
-    workerRef.current?.postMessage(input);
+    try {
+      const remote = await calculateViaApi(input);
+      setResult(remote.outcome);
+      setCalculationSource("api");
+      setWorking(false);
+      setStep("resultados");
+      setFileMessage(`Cálculo procesado por la API${remote.requestId ? ` · solicitud ${remote.requestId}` : ""}. La sesión gratuita no fue persistida.`);
+    } catch {
+      const worker = workerRef.current;
+      if (worker) {
+        setFileMessage("La API no respondió a tiempo. Se utilizó el motor local de respaldo y la sesión no fue persistida.");
+        worker.postMessage(input);
+      } else {
+        setWorking(false);
+        setFileMessage("No se pudo conectar con la API ni iniciar el motor local. Intentá nuevamente.");
+      }
+    }
   };
 
   const downloadNativeFile = async () => {
@@ -989,6 +1009,7 @@ export function CostingWizard() {
               <div><dt>Productos</dt><dd>{products.length}/5</dd></div>
               <div><dt>Costos</dt><dd>{costs.length}</dd></div>
               <div><dt>Driver</dt><dd>{driverLabels[configuration.driverIndirectos]}</dd></div>
+              {calculationSource && <div><dt>Procesamiento</dt><dd>{calculationSource === "api" ? "API Render" : "Respaldo local"}</dd></div>}
               {configuration.tipoActividad !== "reventa" && <div><dt>Horas MOD ocupadas</dt><dd>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(totalOccupiedHours)}</dd></div>}
               {configuration.tipoActividad !== "reventa" && <div><dt>Operarios</dt><dd>{configuration.cantidadOperarios}</dd></div>}
               {configuration.tipoActividad !== "reventa" && <div><dt>Horas MOD disponibles</dt><dd>{new Intl.NumberFormat("es-AR", { maximumFractionDigits: 2 }).format(availableLaborHours)}</dd></div>}
@@ -1002,7 +1023,7 @@ export function CostingWizard() {
               <li className={step === "resultados" ? "done" : ""}>Cargar costos y ventas</li>
               <li className={result !== null ? "done" : ""}>Validar y calcular</li>
             </ol>
-            <p>Los resultados son de gestión y no reemplazan información contable o fiscal formal.</p>
+            <p>Los resultados son de gestión y no reemplazan información contable o fiscal formal. La sesión gratuita se procesa sin persistencia en Supabase.</p>
           </section>
           {fileMessage && <p className="file-message side-message">{fileMessage}</p>}
         </aside>

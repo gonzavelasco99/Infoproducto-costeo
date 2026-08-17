@@ -6,7 +6,7 @@ export default defineConfig({
       include: ["packages/domain/src/**/*.ts"],
       reporter: ["text", "html"]
     },
-    include: ["packages/**/test/**/*.test.ts"],
+    include: ["packages/**/test/**/*.test.ts", "apps/**/test/**/*.test.ts"],
     passWithNoTests: false
   }
 });
