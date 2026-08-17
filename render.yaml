@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: costeo-api-beta
+    runtime: node
+    plan: free
+    branch: main
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm build:shared && pnpm --filter @costeo/api build
+    startCommand: node apps/api/dist/server.js
+    healthCheckPath: /health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WEB_ORIGIN
+        value: https://infoproducto-costeo-web.vercel.app
+      - key: LOG_LEVEL
+        value: info

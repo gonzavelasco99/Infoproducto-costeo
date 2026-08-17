@@ -9,5 +9,6 @@ coverage/
 *.tsbuildinfo
 .dev-web*.log
 .vercel/
+supabase/.temp/
 tmp/
 .DS_Store
